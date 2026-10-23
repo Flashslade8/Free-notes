@@ -1,15 +1,30 @@
 name: FreeNotes
 options:
-  bundleIdPrefix: com.ethan
+  bundleIdPrefix: com.ethan          # change if you used a different name
+packages:
+  GoogleSignIn:
+    url: https://github.com/google/GoogleSignIn-iOS
+    from: 9.0.0
 targets:
   FreeNotes:
     type: application
     platform: iOS
     deploymentTarget: "17.0"
     sources: [FreeNotes]
+    dependencies:
+      - package: GoogleSignIn
+    info:
+      path: FreeNotes/Info.plist
+      properties:
+        UILaunchScreen: {}
+        # --- Google Sign-In: replace BOTH values (see instructions) ---
+        GIDClientID: "730011780186-2ntocradonalqe2otvs97gn3v8uqvfb8.apps.googleusercontent.com"
+        CFBundleURLTypes:
+          - CFBundleURLSchemes:
+              - "com.googleusercontent.apps.YOUR_CLIENT_ID"
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.ethan.FreeNotes
+        PRODUCT_BUNDLE_IDENTIFIER: com.ethan.FreeNotes   # change if you used a different name
         PRODUCT_NAME: FreeNotes
         SWIFT_VERSION: "5.0"
         MARKETING_VERSION: "1.0"

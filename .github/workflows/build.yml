@@ -1,0 +1,38 @@
+name: Build IPA
+
+on:
+  workflow_dispatch:      # adds a manual "Run workflow" button
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build (unsigned)
+        run: |
+          xcodebuild -project FreeNotes.xcodeproj \
+            -scheme FreeNotes \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
+
+      - name: Package IPA
+        run: |
+          mkdir Payload
+          cp -R build/Build/Products/Release-iphoneos/FreeNotes.app Payload/
+          zip -r FreeNotes.ipa Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FreeNotes-ipa
+          path: FreeNotes.ipa

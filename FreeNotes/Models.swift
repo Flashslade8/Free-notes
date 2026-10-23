@@ -40,12 +40,17 @@ final class NoteStore: ObservableObject {
         didSet { scheduleSave() }
     }
 
-    private let fileURL = FileManager.default
-        .urls(for: .documentDirectory, in: .userDomainMask)[0]
-        .appendingPathComponent("notes.json")
+    private let fileURL: URL
     private var saveTask: Task<Void, Never>?
 
-    init() { load() }
+    /// Each account gets its own file. "guest" keeps using the original notes.json.
+    init(userID: String = "guest") {
+        let name = userID == "guest" ? "notes.json" : "notes-\(userID).json"
+        fileURL = FileManager.default
+            .urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent(name)
+        load()
+    }
 
     func addNote() -> Note {
         let note = Note()

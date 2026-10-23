@@ -1,4 +1,5 @@
- PencilKit
+import SwiftUI
+import PencilKit
 
 /// A single handwriting page backed by PKCanvasView.
 struct CanvasView: UIViewRepresentable {

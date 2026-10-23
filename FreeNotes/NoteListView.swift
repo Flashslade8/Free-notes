@@ -2,6 +2,7 @@ import SwiftUI
 
 struct NoteListView: View {
     @EnvironmentObject var store: NoteStore
+    @EnvironmentObject var auth: AuthManager
     @State private var search = ""
     @State private var path: [UUID] = []
 
@@ -39,10 +40,25 @@ struct NoteListView: View {
             .navigationTitle("Free Notes")
             .searchable(text: $search)
             .toolbar {
-                Button {
-                    let note = store.addNote()
-                    path.append(note.id)
-                } label: { Image(systemName: "square.and.pencil") }
+                ToolbarItem(placement: .topBarLeading) {
+                    Menu {
+                        if let user = auth.user {
+                            Text(user.name)
+                            if let email = user.email { Text(email) }
+                            Divider()
+                            Button(user.provider == .guest ? "Sign In" : "Sign Out",
+                                   role: user.provider == .guest ? nil : .destructive) {
+                                auth.signOut()
+                            }
+                        }
+                    } label: { Image(systemName: "person.crop.circle") }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        let note = store.addNote()
+                        path.append(note.id)
+                    } label: { Image(systemName: "square.and.pencil") }
+                }
             }
             .navigationDestination(for: UUID.self) { id in
                 NoteEditorView(noteID: id)

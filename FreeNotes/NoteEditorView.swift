@@ -1,4 +1,4 @@
-iimport SwiftUI
+import SwiftUI
 import PencilKit
  
 struct ShareItem: Identifiable {

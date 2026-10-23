@@ -21,7 +21,7 @@ targets:
         GIDClientID: "730011780186-2ntocradonalqe2otvs97gn3v8uqvfb8.apps.googleusercontent.com"
         CFBundleURLTypes:
           - CFBundleURLSchemes:
-              - "com.googleusercontent.apps.YOUR_CLIENT_ID"
+              - "com.googleusercontent.apps.730011780186-2ntocradonalqe2otvs97gn3v8uqvfb8"
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.ethan.FreeNotes   # change if you used a different name

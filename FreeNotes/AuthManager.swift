@@ -89,7 +89,8 @@ final class AuthManager: ObservableObject {
             return
         }
         GIDSignIn.sharedInstance.configuration = GIDConfiguration(clientID: clientID)
-        GIDSignIn.sharedInstance.signIn(withPresenting: presenter) { [weak self] result, error in
+        GIDSignIn.sharedInstance.signIn(withPresenting: presenter, hint: nil,
+                                           additionalScopes: [DriveClient.scope]) { [weak self] result, error in
             Task { @MainActor in
                 guard let self else { return }
                 if let error {

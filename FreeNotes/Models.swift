@@ -193,11 +193,60 @@ final class NoteStore: ObservableObject {
 
             if fileID == nil || !Self.sameContent(merged, remote) {
                 let body = try JSONEncoder().encode(merged)
-                try await DriveClient.upload(body, fileID: fileID, token: token)
+                try await DriveClient.uploadSyncFile(body, fileID: fileID, token: token)
             }
-            syncStatus = "Synced " + Date().formatted(date: .omitted, time: .shortened)
+
+            // Keep a readable PDF copy of every note in the visible "Free Notes" folder.
+            // A problem here shouldn't stop the main sync from counting as done.
+            var folderNote = ""
+            do {
+                try await syncPDFCopies(merged, token: token)
+            } catch {
+                folderNote = " (Drive folder: " + error.localizedDescription + ")"
+            }
+            syncStatus = "Synced " + Date().formatted(date: .omitted, time: .shortened) + folderNote
         } catch {
             syncStatus = "Sync failed: " + error.localizedDescription
+        }
+    }
+
+    /// Uploads a PDF for every new or changed note, and removes the PDF of deleted notes.
+    private func syncPDFCopies(_ merged: StoreFile, token: String) async throws {
+        guard DriveClient.hasScope(DriveClient.fileScope) else {
+            throw SyncError.missingFolderPermission
+        }
+        let folderID = try await DriveClient.findOrCreateFolder(token: token)
+        let existing = try await DriveClient.listPDFs(folderID: folderID, token: token)
+
+        var byNote: [String: DriveClient.RemotePDF] = [:]
+        for pdf in existing {
+            if let id = pdf.noteID { byNote[id] = pdf }
+        }
+
+        for note in merged.notes {
+            let stamp = String(Int(note.modifiedAt.timeIntervalSince1970 * 1000))
+            let current = byNote[note.id.uuidString]
+            if current?.stamp == stamp { continue }          // already up to date
+
+            guard let url = PDFExporter.export(note),
+                  let data = try? Data(contentsOf: url) else { continue }
+            try? FileManager.default.removeItem(at: url)
+
+            var metadata: [String: Any] = [
+                "name": DriveClient.pdfName(for: note.title),
+                "appProperties": ["noteID": note.id.uuidString, "stamp": stamp]
+            ]
+            if current == nil { metadata["parents"] = [folderID] }
+            try await DriveClient.upload(data, mimeType: "application/pdf", metadata: metadata,
+                                         fileID: current?.id, token: token)
+        }
+
+        let liveIDs = Set(merged.notes.map { $0.id.uuidString })
+        for gone in merged.deleted {
+            let id = gone.id.uuidString
+            if !liveIDs.contains(id), let pdf = byNote[id] {
+                try await DriveClient.trash(fileID: pdf.id, token: token)
+            }
         }
     }
 

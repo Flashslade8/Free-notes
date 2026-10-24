@@ -45,6 +45,10 @@ struct NoteListView: View {
                         if let user = auth.user {
                             Text(user.name)
                             if let email = user.email { Text(email) }
+                            if store.syncEnabled {
+                                Text(store.syncStatus.isEmpty ? "Google Drive sync on" : store.syncStatus)
+                                Button("Sync Now") { Task { await store.syncNow() } }
+                            }
                             Divider()
                             Button(user.provider == .guest ? "Sign In" : "Sign Out",
                                    role: user.provider == .guest ? nil : .destructive) {

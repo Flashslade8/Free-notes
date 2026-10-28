@@ -1,5 +1,7 @@
 import SwiftUI
 import PencilKit
+import PDFKit
+import UniformTypeIdentifiers
 
 struct ShareItem: Identifiable {
     let id = UUID()
@@ -14,13 +16,19 @@ struct ShareSheet: UIViewControllerRepresentable {
     func updateUIViewController(_ vc: UIActivityViewController, context: Context) {}
 }
 
+/// Owner of undo actions that swap a whole page drawing (used for shapes).
+final class UndoTarget: NSObject {
+    static let shared = UndoTarget()
+}
+
 struct NoteEditorView: View {
     @EnvironmentObject var store: NoteStore
     let noteID: UUID
 
-    @State private var picker = PKToolPicker()
+    @StateObject private var tools = ToolState()
     @State private var pencilOnly = false
     @State private var shareItem: ShareItem?
+    @State private var revisions: [UUID: Int] = [:]
 
     // Zoom
     @State private var zoom: CGFloat = 1.0
@@ -29,8 +37,12 @@ struct NoteEditorView: View {
     private let minZoom: CGFloat = 0.5
     private let maxZoom: CGFloat = 3.0
 
-    // Delete
+    // Delete page
     @State private var pageToDelete: UUID?
+
+    // Insert PDF
+    @State private var showImporter = false
+    @State private var importError: String?
 
     // Undo / redo
     @Environment(\.undoManager) private var undoManager
@@ -72,10 +84,29 @@ struct NoteEditorView: View {
             .onChange(of: geo.size.width) { _, newWidth in viewportWidth = newWidth }
         }
         .background(Color(.systemGray5))
+        .safeAreaInset(edge: .bottom) { StationeryBar(tools: tools) }
         .navigationTitle($store.notes[idx].title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbar(idx) }
         .sheet(item: $shareItem) { ShareSheet(url: $0.url) }
+        .fileImporter(isPresented: $showImporter, allowedContentTypes: [.pdf]) { result in
+            switch result {
+            case .success(let url):
+                do {
+                    try store.insertPDF(from: url, into: noteID)
+                    Haptics.success()
+                } catch {
+                    importError = error.localizedDescription
+                }
+            case .failure(let error):
+                importError = error.localizedDescription
+            }
+        }
+        .alert("Couldn't insert PDF",
+               isPresented: Binding(get: { importError != nil },
+                                    set: { if !$0 { importError = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: { Text(importError ?? "") }
         .confirmationDialog(deleteTitle,
                             isPresented: Binding(get: { pageToDelete != nil },
                                                  set: { if !$0 { pageToDelete = nil } }),
@@ -94,17 +125,38 @@ struct NoteEditorView: View {
     }
 
     private func pageView(idx: Int, page: Binding<NotePage>) -> some View {
-        let pages = store.notes[idx].pages
-        let number = (pages.firstIndex { $0.id == page.wrappedValue.id } ?? 0) + 1
+        let note = store.notes[idx]
+        let pages = note.pages
+        let value = page.wrappedValue
+        let number = (pages.firstIndex { $0.id == value.id } ?? 0) + 1
+        let pdfPage = note.pdfPage(for: value)
 
         return ZStack(alignment: .topTrailing) {
             ZStack {
-                PaperView(template: page.wrappedValue.template)
+                if value.pdfID != nil {
+                    PDFPageBackground(page: pdfPage)
+                } else {
+                    PaperView(template: value.template)
+                }
+
                 CanvasView(drawingData: page.drawingData,
-                           picker: picker,
+                           tool: tools.canvasTool,
+                           toolKey: tools.key,
                            pencilOnly: pencilOnly,
-                           becomeActive: page.wrappedValue.id == pages.first?.id,
-                           zoom: zoom)
+                           interactive: !tools.isShape,
+                           becomeActive: value.id == pages.first?.id,
+                           zoom: zoom,
+                           revision: revisions[value.id] ?? 0)
+
+                if case .shape(let kind) = tools.tool {
+                    ShapeOverlay(kind: kind,
+                                 color: tools.color,
+                                 width: tools.width,
+                                 zoom: zoom,
+                                 pencilOnly: pencilOnly) { strokes in
+                        commitShapes(strokes, pageID: value.id)
+                    }
+                }
             }
             .frame(width: PageMetrics.size.width * zoom,
                    height: PageMetrics.size.height * zoom)
@@ -116,7 +168,7 @@ struct NoteEditorView: View {
                 Text("\(number) / \(pages.count)")
                     .font(.caption.monospacedDigit())
                 Button(role: .destructive) {
-                    pageToDelete = page.wrappedValue.id
+                    pageToDelete = value.id
                 } label: {
                     Image(systemName: "trash")
                 }
@@ -125,6 +177,32 @@ struct NoteEditorView: View {
             .padding(.vertical, 8)
             .background(.ultraThinMaterial, in: Capsule())
             .padding(10)
+        }
+    }
+
+    // MARK: - Shapes
+
+    /// Adds finished shapes to a page's drawing, and makes the change undoable.
+    private func commitShapes(_ strokes: [PKStroke], pageID: UUID) {
+        guard !strokes.isEmpty,
+              let n = store.notes.firstIndex(where: { $0.id == noteID }),
+              let p = store.notes[n].pages.firstIndex(where: { $0.id == pageID }) else { return }
+
+        let old = store.notes[n].pages[p].drawingData
+        var drawing = (try? PKDrawing(data: old)) ?? PKDrawing()
+        drawing.strokes.append(contentsOf: strokes)
+        replaceDrawing(pageID: pageID, with: drawing.dataRepresentation(), previous: old)
+        Haptics.tap()
+    }
+
+    private func replaceDrawing(pageID: UUID, with data: Data, previous: Data) {
+        guard let n = store.notes.firstIndex(where: { $0.id == noteID }),
+              let p = store.notes[n].pages.firstIndex(where: { $0.id == pageID }) else { return }
+        store.notes[n].pages[p].drawingData = data
+        revisions[pageID, default: 0] += 1
+        // Registering this while undoing makes it the matching redo, and the other way round.
+        undoManager?.registerUndo(withTarget: UndoTarget.shared) { _ in
+            self.replaceDrawing(pageID: pageID, with: previous, previous: data)
         }
     }
 
@@ -156,9 +234,9 @@ struct NoteEditorView: View {
 
             Menu {
                 Picker("Paper", selection: Binding(
-                    get: { store.notes[idx].pages.first?.template ?? .lined },
+                    get: { store.notes[idx].pages.first(where: { $0.pdfID == nil })?.template ?? .lined },
                     set: { new in
-                        for i in store.notes[idx].pages.indices {
+                        for i in store.notes[idx].pages.indices where store.notes[idx].pages[i].pdfID == nil {
                             store.notes[idx].pages[i].template = new
                         }
                     })) {
@@ -166,9 +244,14 @@ struct NoteEditorView: View {
                 }
             } label: { Image(systemName: "square.grid.3x3") }
 
-            Button {
-                let template = store.notes[idx].pages.last?.template ?? .lined
-                store.notes[idx].pages.append(NotePage(template: template))
+            Menu {
+                Button {
+                    let template = store.notes[idx].pages.last(where: { $0.pdfID == nil })?.template ?? .lined
+                    store.notes[idx].pages.append(NotePage(template: template))
+                } label: { Label("Blank Page", systemImage: "doc") }
+                Button { showImporter = true } label: {
+                    Label("Insert PDF…", systemImage: "doc.richtext")
+                }
             } label: { Image(systemName: "plus.rectangle.on.rectangle") }
 
             Button {
@@ -210,10 +293,13 @@ struct NoteEditorView: View {
 
         if store.notes[n].pages.count <= 1 {
             // A note always keeps at least one page, so just wipe it.
-            let template = store.notes[n].pages.first?.template ?? .lined
-            store.notes[n].pages = [NotePage(template: template)]
+            var cleared = store.notes[n].pages[0]
+            cleared.drawingData = Data()
+            store.notes[n].pages = [cleared]
+            revisions[cleared.id, default: 0] += 1
         } else {
             store.notes[n].pages.removeAll { $0.id == pageID }
+            store.pruneAttachments(noteID)
         }
     }
 }

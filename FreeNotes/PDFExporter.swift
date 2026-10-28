@@ -1,8 +1,9 @@
 import UIKit
 import PencilKit
+import PDFKit
 
 enum PDFExporter {
-    /// Renders every page (paper + ink) into a PDF in the temp directory.
+    /// Renders every page (PDF or paper, plus ink) into a PDF in the temp directory.
     static func export(_ note: Note) -> URL? {
         let rect = CGRect(origin: .zero, size: PageMetrics.size)
         let name = note.title.replacingOccurrences(of: "/", with: "-")
@@ -15,9 +16,13 @@ enum PDFExporter {
                     ctx.beginPage()
                     UIColor.white.setFill()
                     ctx.fill(rect)
-                    drawPaper(page.template, in: rect, ctx: ctx.cgContext)
-                    if let drawing = try? PKDrawing(data: page.drawingData) {
-                        drawing.image(from: rect, scale: 2).draw(in: rect)
+                    if let pdfPage = note.pdfPage(for: page) {
+                        PDFBackground.draw(pdfPage, into: ctx.cgContext, size: rect.size)
+                    } else {
+                        drawPaper(page.template, in: rect, ctx: ctx.cgContext)
+                    }
+                    if let drawing = try? PKDrawing(data: page.drawingData), !drawing.strokes.isEmpty {
+                        lightImage(of: drawing, in: rect, scale: 2).draw(in: rect)
                     }
                 }
             }

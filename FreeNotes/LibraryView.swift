@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 enum SortOrder: String, CaseIterable, Identifiable {
     case edited = "Last Edited", created = "Date Created", name = "Name"
@@ -32,6 +33,8 @@ struct LibraryView: View {
     @State private var movingNote: IDBox?
     @State private var deletingNote: IDBox?
     @State private var deletingFolder: IDBox?
+    @State private var showImporter = false
+    @State private var importError: String?
 
     // MARK: Data
 
@@ -149,6 +152,25 @@ struct LibraryView: View {
             Button("Save") { commitPrompt() }
         }
         .sheet(item: $movingNote) { MoveNoteSheet(noteID: $0.id) }
+        .fileImporter(isPresented: $showImporter, allowedContentTypes: [.pdf]) { result in
+            switch result {
+            case .success(let url):
+                do {
+                    let note = try store.importPDF(from: url, into: currentFolderID)
+                    Haptics.success()
+                    path.append(note.id)
+                } catch {
+                    importError = error.localizedDescription
+                }
+            case .failure(let error):
+                importError = error.localizedDescription
+            }
+        }
+        .alert("Couldn't import PDF",
+               isPresented: Binding(get: { importError != nil },
+                                    set: { if !$0 { importError = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: { Text(importError ?? "") }
         .confirmationDialog("Delete this note?",
                             isPresented: Binding(get: { deletingNote != nil },
                                                  set: { if !$0 { deletingNote = nil } }),
@@ -196,11 +218,16 @@ struct LibraryView: View {
                 }
             }
 
-            Button {
-                let note = store.addNote(in: currentFolderID)
-                Haptics.tap()
-                path.append(note.id)
-            } label: { Image(systemName: "square.and.pencil") }
+            Menu {
+                Button {
+                    let note = store.addNote(in: currentFolderID)
+                    Haptics.tap()
+                    path.append(note.id)
+                } label: { Label("New Note", systemImage: "square.and.pencil") }
+                Button { showImporter = true } label: {
+                    Label("Import PDF…", systemImage: "doc.richtext")
+                }
+            } label: { Image(systemName: "plus") }
         }
     }
 

@@ -30,6 +30,21 @@ enum PDFExporter {
     private static func drawPaper(_ template: PageTemplate, in rect: CGRect, ctx: CGContext) {
         guard template != .blank else { return }
         let step: CGFloat = 28
+
+        if template == .dotted {
+            ctx.setFillColor(UIColor.systemBlue.withAlphaComponent(0.35).cgColor)
+            var y = step
+            while y < rect.height {
+                var x = step
+                while x < rect.width {
+                    ctx.fillEllipse(in: CGRect(x: x - 1.4, y: y - 1.4, width: 2.8, height: 2.8))
+                    x += step
+                }
+                y += step
+            }
+            return
+        }
+
         ctx.setStrokeColor(UIColor.systemBlue.withAlphaComponent(0.18).cgColor)
         ctx.setLineWidth(0.7)
         var y = step * 2

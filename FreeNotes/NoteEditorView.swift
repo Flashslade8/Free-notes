@@ -86,9 +86,11 @@ struct NoteEditorView: View {
             Text("This can't be undone.")
         }
         .onDisappear { store.touch(noteID) }
-        .onReceive(NotificationCenter.default.publisher(for: .NSUndoManagerCheckpoint)) { _ in
-            undoTick += 1       // refreshes the undo / redo buttons
-        }
+        // Refresh the undo / redo buttons after a stroke, an undo or a redo.
+        // (Not NSUndoManagerCheckpoint: checking canRedo posts that one itself, which loops forever.)
+        .onReceive(NotificationCenter.default.publisher(for: .NSUndoManagerDidCloseUndoGroup)) { _ in undoTick += 1 }
+        .onReceive(NotificationCenter.default.publisher(for: .NSUndoManagerDidUndoChange)) { _ in undoTick += 1 }
+        .onReceive(NotificationCenter.default.publisher(for: .NSUndoManagerDidRedoChange)) { _ in undoTick += 1 }
     }
 
     private func pageView(idx: Int, page: Binding<NotePage>) -> some View {

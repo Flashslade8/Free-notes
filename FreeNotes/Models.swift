@@ -1,5 +1,6 @@
 import SwiftUI
 import PencilKit
+import PDFKit
 
 enum PageTemplate: String, Codable, CaseIterable, Identifiable {
     case blank = "Blank", lined = "Lined", grid = "Grid", dotted = "Dotted"
@@ -16,6 +17,8 @@ struct NotePage: Identifiable, Codable, Equatable {
     var id = UUID()
     var drawingData = Data()
     var template: PageTemplate = .lined
+    var pdfID: UUID? = nil          // set when this page sits on top of an imported PDF page
+    var pdfPageIndex: Int? = nil
 }
 
 struct Note: Identifiable, Codable {
@@ -26,9 +29,10 @@ struct Note: Identifiable, Codable {
     var pages: [NotePage] = [NotePage()]
     var folderID: UUID? = nil
     var isFavorite = false
+    var pdfs: [PDFAttachment] = []
 
     enum CodingKeys: String, CodingKey {
-        case id, title, createdAt, modifiedAt, pages, folderID, isFavorite
+        case id, title, createdAt, modifiedAt, pages, folderID, isFavorite, pdfs
     }
 
     init() {}
@@ -43,19 +47,34 @@ struct Note: Identifiable, Codable {
         pages = try c.decode([NotePage].self, forKey: .pages)
         folderID = try c.decodeIfPresent(UUID.self, forKey: .folderID)
         isFavorite = try c.decodeIfPresent(Bool.self, forKey: .isFavorite) ?? false
+        pdfs = try c.decodeIfPresent([PDFAttachment].self, forKey: .pdfs) ?? []
     }
 
     var thumbnail: UIImage? {
-        guard let data = pages.first?.drawingData,
-              let drawing = try? PKDrawing(data: data) else { return nil }
-        let rect = CGRect(origin: .zero, size: PageMetrics.size)
-        return drawing.image(from: rect, scale: 0.4)
+        guard let first = pages.first else { return nil }
+        let drawing = (try? PKDrawing(data: first.drawingData)) ?? PKDrawing()
+        let background = pdfPage(for: first)
+        if drawing.strokes.isEmpty && background == nil { return nil }
+
+        let size = CGSize(width: PageMetrics.size.width * 0.4, height: PageMetrics.size.height * 0.4)
+        return UIGraphicsImageRenderer(size: size).image { renderer in
+            UIColor.white.setFill()
+            renderer.fill(CGRect(origin: .zero, size: size))
+            if let background {
+                PDFBackground.draw(background, into: renderer.cgContext, size: size)
+            }
+            if !drawing.strokes.isEmpty {
+                lightImage(of: drawing, in: CGRect(origin: .zero, size: PageMetrics.size), scale: 0.4)
+                    .draw(in: CGRect(origin: .zero, size: size))
+            }
+        }
     }
 
     /// True when nothing the user can change differs (the edit date is ignored).
     func contentEquals(_ other: Note) -> Bool {
         title == other.title && pages == other.pages
             && folderID == other.folderID && isFavorite == other.isFavorite
+            && pdfs.count == other.pdfs.count
     }
 }
 
@@ -183,6 +202,39 @@ final class NoteStore: ObservableObject {
         }
         notes.insert(copy, at: 0)
         return copy
+    }
+
+    // MARK: - PDFs
+
+    /// Creates a new note whose pages are the pages of a PDF, ready to write on.
+    @discardableResult
+    func importPDF(from url: URL, into folder: UUID?) throws -> Note {
+        let imported = try PDFImport.read(url)
+        var note = Note()
+        note.title = imported.title
+        note.folderID = folder
+        note.pdfs = [imported.attachment]
+        note.pages = imported.pages
+        notes.insert(note, at: 0)
+        return note
+    }
+
+    /// Adds the pages of a PDF to the end of an existing note.
+    func insertPDF(from url: URL, into noteID: UUID) throws {
+        let imported = try PDFImport.read(url)
+        guard let i = notes.firstIndex(where: { $0.id == noteID }) else { return }
+        var note = notes[i]
+        note.pdfs.append(imported.attachment)
+        note.pages.append(contentsOf: imported.pages)
+        notes[i] = note
+    }
+
+    /// Drops stored PDFs that no page uses any more (after pages are deleted).
+    func pruneAttachments(_ noteID: UUID) {
+        guard let i = notes.firstIndex(where: { $0.id == noteID }) else { return }
+        let used = Set(notes[i].pages.compactMap(\.pdfID))
+        let kept = notes[i].pdfs.filter { used.contains($0.id) }
+        if kept.count != notes[i].pdfs.count { notes[i].pdfs = kept }
     }
 
     // MARK: - Folders

@@ -1,10 +1,10 @@
 import SwiftUI
 import PencilKit
- 
+
 /// PKCanvasView that re-applies its zoom whenever it is laid out.
 final class ZoomableCanvas: PKCanvasView {
     var targetZoom: CGFloat = 1
- 
+
     override func layoutSubviews() {
         super.layoutSubviews()
         if abs(zoomScale - targetZoom) > 0.001 {
@@ -12,7 +12,7 @@ final class ZoomableCanvas: PKCanvasView {
         }
     }
 }
- 
+
 /// A single handwriting page backed by PencilKit.
 /// The canvas is zoomed natively, so ink stays sharp at any zoom level.
 struct CanvasView: UIViewRepresentable {
@@ -21,7 +21,7 @@ struct CanvasView: UIViewRepresentable {
     let pencilOnly: Bool
     let becomeActive: Bool
     let zoom: CGFloat
- 
+
     func makeUIView(context: Context) -> ZoomableCanvas {
         let canvas = ZoomableCanvas()
         canvas.delegate = context.coordinator
@@ -37,7 +37,7 @@ struct CanvasView: UIViewRepresentable {
         canvas.minimumZoomScale = 0.25
         canvas.maximumZoomScale = 4
         canvas.targetZoom = zoom
- 
+
         picker.addObserver(canvas)
         picker.setVisible(true, forFirstResponder: canvas)
         if becomeActive {
@@ -45,44 +45,60 @@ struct CanvasView: UIViewRepresentable {
         }
         return canvas
     }
- 
+
     func updateUIView(_ canvas: ZoomableCanvas, context: Context) {
         canvas.drawingPolicy = pencilOnly ? .pencilOnly : .anyInput
         canvas.targetZoom = zoom
         canvas.setNeedsLayout()
         context.coordinator.parent = self
     }
- 
+
     func makeCoordinator() -> Coordinator { Coordinator(self) }
- 
+
     final class Coordinator: NSObject, PKCanvasViewDelegate {
         var parent: CanvasView
         init(_ parent: CanvasView) { self.parent = parent }
- 
+
         func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
             parent.drawingData = canvasView.drawing.dataRepresentation()
         }
- 
+
         // Move the tool picker to whichever page the user starts writing on.
         func canvasViewDidBeginUsingTool(_ canvasView: PKCanvasView) {
             if !canvasView.isFirstResponder { canvasView.becomeFirstResponder() }
         }
     }
 }
- 
+
 /// Paper background (blank / lined / grid). Scales to whatever size it is given.
 struct PaperView: View {
     let template: PageTemplate
- 
+
     var body: some View {
         Canvas { ctx, size in
             guard template != .blank else { return }
             let k = size.width / PageMetrics.size.width
             ctx.scaleBy(x: k, y: k)
- 
+
             let w = PageMetrics.size.width
             let h = PageMetrics.size.height
             let step: CGFloat = 28
+
+            if template == .dotted {
+                var dots = Path()
+                var dy = step
+                while dy < h {
+                    var dx = step
+                    while dx < w {
+                        dots.addEllipse(in: CGRect(x: dx - 1.4, y: dy - 1.4, width: 2.8, height: 2.8))
+                        dx += step
+                    }
+                    dy += step
+                }
+                ctx.fill(dots, with: .color(.blue.opacity(0.35)))
+                return
+            }
+
             var path = Path()
             var y = step * 2
             while y < h {
@@ -103,4 +119,3 @@ struct PaperView: View {
         .background(Color.white)
     }
 }
- 

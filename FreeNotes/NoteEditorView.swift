@@ -125,59 +125,81 @@ struct NoteEditorView: View {
     }
 
     private func pageView(idx: Int, page: Binding<NotePage>) -> some View {
-        let note = store.notes[idx]
-        let pages = note.pages
-        let value = page.wrappedValue
-        let number = (pages.firstIndex { $0.id == value.id } ?? 0) + 1
-        let pdfPage = note.pdfPage(for: value)
+        let note: Note = store.notes[idx]
+        let pageID: UUID = page.wrappedValue.id
+        let number: Int = (note.pages.firstIndex { $0.id == pageID } ?? 0) + 1
 
         return ZStack(alignment: .topTrailing) {
-            ZStack {
-                if value.pdfID != nil {
-                    PDFPageBackground(page: pdfPage)
-                } else {
-                    PaperView(template: value.template)
-                }
-
-                CanvasView(drawingData: page.drawingData,
-                           tool: tools.canvasTool,
-                           toolKey: tools.key,
-                           pencilOnly: pencilOnly,
-                           interactive: !tools.isShape,
-                           becomeActive: value.id == pages.first?.id,
-                           zoom: zoom,
-                           revision: revisions[value.id] ?? 0)
-
-                if case .shape(let kind) = tools.tool {
-                    ShapeOverlay(kind: kind,
-                                 color: tools.color,
-                                 width: tools.width,
-                                 zoom: zoom,
-                                 pencilOnly: pencilOnly) { strokes in
-                        commitShapes(strokes, pageID: value.id)
-                    }
-                }
-            }
-            .frame(width: PageMetrics.size.width * zoom,
-                   height: PageMetrics.size.height * zoom)
-            .clipShape(RoundedRectangle(cornerRadius: 4))
-            .shadow(color: .black.opacity(0.2), radius: 6, y: 2)
-
-            // Page number + delete button
-            HStack(spacing: 10) {
-                Text("\(number) / \(pages.count)")
-                    .font(.caption.monospacedDigit())
-                Button(role: .destructive) {
-                    pageToDelete = value.id
-                } label: {
-                    Image(systemName: "trash")
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(.ultraThinMaterial, in: Capsule())
-            .padding(10)
+            pageSurface(note: note, page: page)
+            pageBadge(number: number, total: note.pages.count, pageID: pageID)
         }
+    }
+
+    /// Paper (or PDF page), the ink canvas and, for shape tools, the shape layer.
+    private func pageSurface(note: Note, page: Binding<NotePage>) -> some View {
+        let value: NotePage = page.wrappedValue
+        let width: CGFloat = PageMetrics.size.width * zoom
+        let height: CGFloat = PageMetrics.size.height * zoom
+
+        return ZStack {
+            backgroundLayer(note: note, page: value)
+            canvasLayer(note: note, page: page, value: value)
+            shapeLayer(pageID: value.id)
+        }
+        .frame(width: width, height: height)
+        .clipShape(RoundedRectangle(cornerRadius: 4))
+        .shadow(color: .black.opacity(0.2), radius: 6, y: 2)
+    }
+
+    @ViewBuilder
+    private func backgroundLayer(note: Note, page: NotePage) -> some View {
+        if page.pdfID != nil {
+            PDFPageBackground(page: note.pdfPage(for: page))
+        } else {
+            PaperView(template: page.template)
+        }
+    }
+
+    private func canvasLayer(note: Note, page: Binding<NotePage>, value: NotePage) -> some View {
+        let isFirst: Bool = value.id == note.pages.first?.id
+        let revision: Int = revisions[value.id] ?? 0
+        return CanvasView(drawingData: page.drawingData,
+                          tool: tools.canvasTool,
+                          toolKey: tools.key,
+                          pencilOnly: pencilOnly,
+                          interactive: !tools.isShape,
+                          becomeActive: isFirst,
+                          zoom: zoom,
+                          revision: revision)
+    }
+
+    @ViewBuilder
+    private func shapeLayer(pageID: UUID) -> some View {
+        if case .shape(let kind) = tools.tool {
+            ShapeOverlay(kind: kind,
+                         color: tools.color,
+                         width: tools.width,
+                         zoom: zoom,
+                         pencilOnly: pencilOnly,
+                         onCommit: { strokes in commitShapes(strokes, pageID: pageID) })
+        }
+    }
+
+    /// Page number + delete button in the corner of each page.
+    private func pageBadge(number: Int, total: Int, pageID: UUID) -> some View {
+        HStack(spacing: 10) {
+            Text("\(number) / \(total)")
+                .font(.caption.monospacedDigit())
+            Button(role: .destructive) {
+                pageToDelete = pageID
+            } label: {
+                Image(systemName: "trash")
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.ultraThinMaterial, in: Capsule())
+        .padding(10)
     }
 
     // MARK: - Shapes

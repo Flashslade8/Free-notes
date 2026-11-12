@@ -34,6 +34,7 @@ struct NoteEditorView: View {
     @State private var zoom: CGFloat = 1.0
     @State private var baseZoom: CGFloat = 1.0
     @State private var viewportWidth: CGFloat = 0
+    @State private var autoFit = true      // false once you zoom by hand
     private let minZoom: CGFloat = 0.5
     private let maxZoom: CGFloat = 3.0
 
@@ -63,12 +64,13 @@ struct NoteEditorView: View {
     private func editor(_ idx: Int) -> some View {
         GeometryReader { geo in
             ScrollView([.vertical, .horizontal]) {
-                VStack(spacing: PageMetrics.spacing) {
+                VStack(spacing: 10) {
                     ForEach($store.notes[idx].pages) { $page in
                         pageView(idx: idx, page: $page)
                     }
                 }
-                .padding(24)
+                .padding(.top, 8)
+                .padding(.bottom, 110)      // keeps the last page clear of the toolbar
                 .frame(minWidth: geo.size.width)
             }
             .simultaneousGesture(
@@ -78,13 +80,15 @@ struct NoteEditorView: View {
             )
             .onAppear {
                 viewportWidth = geo.size.width
-                // On narrow screens (iPhone) start zoomed out so the page fits.
-                if geo.size.width < PageMetrics.size.width + 48 { fitWidth() }
+                fitWidth()                  // pages fill the screen, like a full-screen document
             }
-            .onChange(of: geo.size.width) { _, newWidth in viewportWidth = newWidth }
+            .onChange(of: geo.size.width) { _, newWidth in
+                viewportWidth = newWidth
+                if autoFit { fitWidth() }   // stays full width when you rotate the device
+            }
         }
         .background(Color(.systemGray5))
-        .safeAreaInset(edge: .bottom) { StationeryBar(tools: tools) }
+        .overlay(alignment: .bottom) { StationeryBar(tools: tools) }   // floats over the page
         .navigationTitle($store.notes[idx].title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbar(idx) }
@@ -147,8 +151,6 @@ struct NoteEditorView: View {
             shapeLayer(pageID: value.id)
         }
         .frame(width: width, height: height)
-        .clipShape(RoundedRectangle(cornerRadius: 4))
-        .shadow(color: .black.opacity(0.2), radius: 6, y: 2)
     }
 
     @ViewBuilder
@@ -289,13 +291,15 @@ struct NoteEditorView: View {
     private func setZoom(_ value: CGFloat, commit: Bool) {
         let clamped = min(max(value, minZoom), maxZoom)
         zoom = clamped
+        autoFit = false
         if commit { baseZoom = clamped }
     }
 
     /// Zoom so the page fills the width of the screen.
     private func fitWidth() {
         guard viewportWidth > 0 else { return }
-        setZoom((viewportWidth - 48) / PageMetrics.size.width, commit: true)
+        setZoom(viewportWidth / PageMetrics.size.width, commit: true)
+        autoFit = true
     }
 
     // MARK: - Delete helpers

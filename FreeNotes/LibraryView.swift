@@ -22,11 +22,11 @@ struct LibraryView: View {
     let scope: SidebarItem
     @Binding var selection: SidebarItem?
     @Binding var path: NavigationPath
+    let searchText: String
 
     @AppStorage("viewMode") private var viewMode = "grid"
     @AppStorage("sortOrder") private var sortRaw = SortOrder.edited.rawValue
 
-    @State private var search = ""
     @State private var prompt: LibraryPrompt?
     @State private var promptText = ""
     @State private var showPrompt = false
@@ -45,14 +45,14 @@ struct LibraryView: View {
 
     private var title: String {
         switch scope {
-        case .home: return "Home"
+        case .home, .notes: return "Notes"
         case .favourites: return "Favourites"
         case .folder(let id): return store.folders.first { $0.id == id }?.name ?? "Folder"
         }
     }
 
     private var searching: Bool {
-        !search.trimmingCharacters(in: .whitespaces).isEmpty
+        !searchText.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
     private var sort: SortOrder { SortOrder(rawValue: sortRaw) ?? .edited }
@@ -68,7 +68,7 @@ struct LibraryView: View {
     private var visibleFolders: [Folder] {
         if searching { return [] }
         switch scope {
-        case .home: return store.subfolders(of: nil)
+        case .home, .notes: return store.subfolders(of: nil)
         case .favourites: return []
         case .folder(let id): return store.subfolders(of: id)
         }
@@ -76,18 +76,13 @@ struct LibraryView: View {
 
     private var visibleNotes: [Note] {
         if searching {
-            return sorted(store.notes.filter { $0.title.localizedCaseInsensitiveContains(search) })
+            return sorted(store.notes.filter { $0.title.localizedCaseInsensitiveContains(searchText) })
         }
         switch scope {
-        case .home: return sorted(store.notesInFolder(nil))
+        case .home, .notes: return sorted(store.notesInFolder(nil))
         case .favourites: return sorted(store.notes.filter(\.isFavorite))
         case .folder(let id): return sorted(store.notesInFolder(id))
         }
-    }
-
-    private var recents: [Note] {
-        guard scope == .home, !searching else { return [] }
-        return Array(store.notes.sorted { $0.modifiedAt > $1.modifiedAt }.prefix(6))
     }
 
     // MARK: Body
@@ -95,19 +90,6 @@ struct LibraryView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 28) {
-                if !recents.isEmpty {
-                    VStack(alignment: .leading, spacing: 10) {
-                        header("Recent")
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: 16) {
-                                ForEach(recents) { note in
-                                    gridCard(note).frame(width: 150)
-                                }
-                            }
-                        }
-                    }
-                }
-
                 if !visibleFolders.isEmpty {
                     VStack(alignment: .leading, spacing: 10) {
                         header("Folders")
@@ -136,15 +118,14 @@ struct LibraryView: View {
                     }
                 }
 
-                if visibleFolders.isEmpty && visibleNotes.isEmpty && recents.isEmpty {
+                if visibleFolders.isEmpty && visibleNotes.isEmpty {
                     emptyState
                 }
             }
             .padding()
         }
         .background(Color(.systemGroupedBackground))
-        .navigationTitle(title)
-        .searchable(text: $search, prompt: "Search notes")
+        .navigationTitle(searching ? "Search" : title)
         .toolbar { toolbarContent }
         .alert(promptTitle, isPresented: $showPrompt) {
             TextField("Name", text: $promptText)
@@ -243,7 +224,7 @@ struct LibraryView: View {
                 ContentUnavailableView("No Favourites", systemImage: "star",
                                        description: Text("Touch and hold a note, then choose Favourite."))
             } else if searching {
-                ContentUnavailableView.search(text: search)
+                ContentUnavailableView.search(text: searchText)
             } else {
                 ContentUnavailableView("Nothing Here Yet", systemImage: "pencil.and.scribble",
                                        description: Text("Tap the pencil button to start a note."))

@@ -43,6 +43,7 @@ struct NoteEditorView: View {
 
     // Insert PDF
     @State private var showImporter = false
+    @State private var showPageTemplates = false
     @State private var importError: String?
 
     // Undo / redo
@@ -93,6 +94,14 @@ struct NoteEditorView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbar(idx) }
         .sheet(item: $shareItem) { ShareSheet(url: $0.url) }
+        .sheet(isPresented: $showPageTemplates) {
+            TemplatePickerSheet { template in
+                if let n = store.notes.firstIndex(where: { $0.id == noteID }) {
+                    store.notes[n].pages.append(NotePage(template: template))
+                    Haptics.success()
+                }
+            }
+        }
         .fileImporter(isPresented: $showImporter, allowedContentTypes: [.pdf]) { result in
             switch result {
             case .success(let url):
@@ -264,7 +273,7 @@ struct NoteEditorView: View {
                             store.notes[idx].pages[i].template = new
                         }
                     })) {
-                    ForEach(PageTemplate.allCases) { Text($0.rawValue).tag($0) }
+                    ForEach(PageTemplate.basic) { Text($0.rawValue).tag($0) }
                 }
             } label: { Image(systemName: "square.grid.3x3") }
 
@@ -273,6 +282,9 @@ struct NoteEditorView: View {
                     let template = store.notes[idx].pages.last(where: { $0.pdfID == nil })?.template ?? .lined
                     store.notes[idx].pages.append(NotePage(template: template))
                 } label: { Label("Blank Page", systemImage: "doc") }
+                Button { showPageTemplates = true } label: {
+                    Label("Page from Template…", systemImage: "doc.text.image")
+                }
                 Button { showImporter = true } label: {
                     Label("Insert PDF…", systemImage: "doc.richtext")
                 }

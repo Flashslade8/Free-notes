@@ -3,7 +3,19 @@ import PencilKit
 import PDFKit
 
 enum PageTemplate: String, Codable, CaseIterable, Identifiable {
+    // Basic paper
     case blank = "Blank", lined = "Lined", grid = "Grid", dotted = "Dotted"
+    // Planners
+    case dailyPlanner = "Daily Planner", weeklyPlanner = "Weekly Planner"
+    case monthlyPlanner = "Monthly Planner", studyTimetable = "Study Timetable"
+    // Lists
+    case todoList = "To-Do List", shoppingList = "Shopping List"
+    // Study and work
+    case cornellNotes = "Cornell Notes", meetingNotes = "Meeting Notes"
+    // Self care
+    case dailyJournal = "Daily Journal", gratitudeJournal = "Gratitude Journal"
+    case habitTracker = "Habit Tracker"
+
     var id: String { rawValue }
 }
 

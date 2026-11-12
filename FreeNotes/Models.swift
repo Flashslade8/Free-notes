@@ -153,9 +153,10 @@ final class NoteStore: ObservableObject {
     // MARK: - Notes
 
     @discardableResult
-    func addNote(in folder: UUID? = nil) -> Note {
+    func addNote(in folder: UUID? = nil, template: PageTemplate? = nil) -> Note {
         var note = Note()
         note.folderID = folder
+        if let template { note.pages = [NotePage(template: template)] }
         notes.insert(note, at: 0)
         return note
     }

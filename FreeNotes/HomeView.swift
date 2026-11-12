@@ -12,6 +12,7 @@ struct HomeView: View {
     @EnvironmentObject var store: NoteStore
     @State private var selection: SidebarItem? = .home
     @State private var path = NavigationPath()
+    @State private var columnVisibility = NavigationSplitViewVisibility.automatic
     @State private var search = ""
     @State private var showSettings = false
     @State private var showNewFolder = false
@@ -22,7 +23,7 @@ struct HomeView: View {
     }
 
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             sidebar
         } detail: {
             NavigationStack(path: $path) {
@@ -31,6 +32,10 @@ struct HomeView: View {
             }
         }
         .onChange(of: selection) { _, _ in path = NavigationPath() }   // leave an open note
+        .onChange(of: path.count) { _, count in
+            // An open note takes the whole screen; the sidebar comes back when you leave it.
+            withAnimation { columnVisibility = count > 0 ? .detailOnly : .automatic }
+        }
         .sheet(isPresented: $showSettings) { SettingsView() }
         .alert("New Folder", isPresented: $showNewFolder) {
             TextField("Name", text: $newFolderName)

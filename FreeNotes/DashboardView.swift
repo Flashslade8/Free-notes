@@ -99,7 +99,7 @@ struct DashboardView: View {
                 .shadow(color: Color.accentColor.opacity(0.3), radius: 10, y: 5)
 
             Text(Date.now.formatted(.dateTime.weekday(.wide).day().month(.wide)))
-                .font(.system(size: 38, weight: .heavy, design: .rounded))
+                .font(.heading(38))
                 .multilineTextAlignment(.center)
         }
         .padding(.top, 20)
@@ -149,7 +149,7 @@ struct DashboardView: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
                 Text(title)
-                    .font(.system(size: 26, weight: .heavy, design: .rounded))
+                    .font(.heading(26))
                 Spacer()
                 if !notes.isEmpty {
                     Button("See all") { selection = title == "Favourites" ? .favourites : .notes }
@@ -195,9 +195,9 @@ private struct ActionCard: View {
                     .multilineTextAlignment(.center)
             }
             .frame(maxWidth: .infinity, minHeight: 132)
-            .background(tint.opacity(0.10), in: RoundedRectangle(cornerRadius: 22))
-            .overlay(RoundedRectangle(cornerRadius: 22).stroke(tint.opacity(0.35), lineWidth: 1))
-            .contentShape(RoundedRectangle(cornerRadius: 22))
+            .background(tint.opacity(0.10), in: RoundedRectangle(cornerRadius: Theme.Radius.large))
+            .overlay(RoundedRectangle(cornerRadius: Theme.Radius.large).stroke(tint.opacity(0.35), lineWidth: 1))
+            .contentShape(RoundedRectangle(cornerRadius: Theme.Radius.large))
         }
         .buttonStyle(.plain)
         .foregroundStyle(.primary)
@@ -213,7 +213,7 @@ private struct RecentCard: View {
                 NoteThumbnail(note: note)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                     .overlay(RoundedRectangle(cornerRadius: 12).stroke(.quaternary))
-                    .shadow(color: .black.opacity(0.08), radius: 5, y: 2)
+                    .softShadow(radius: 6, y: 2)
                 Text(note.title)
                     .font(.subheadline.weight(.semibold))
                     .lineLimit(1)
@@ -224,5 +224,6 @@ private struct RecentCard: View {
             .frame(width: 160)
         }
         .buttonStyle(.plain)
+        .noteTransitionSource(note.id)
     }
 }

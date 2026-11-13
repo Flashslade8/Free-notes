@@ -34,6 +34,7 @@ struct MainView: View {
     @StateObject private var store: NoteStore
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("accent") private var accentRaw = AccentOption.blue.rawValue
+    @AppStorage("appearance") private var appearanceRaw = Appearance.system.rawValue
 
     init(userID: String, syncEnabled: Bool) {
         _store = StateObject(wrappedValue: NoteStore(userID: userID, syncEnabled: syncEnabled))
@@ -43,6 +44,7 @@ struct MainView: View {
         HomeView()
             .environmentObject(store)
             .tint((AccentOption(rawValue: accentRaw) ?? .blue).color)
+            .preferredColorScheme((Appearance(rawValue: appearanceRaw) ?? .system).colorScheme)
             .task { await store.syncNow() }                       // when the app opens
             .onChange(of: scenePhase) { _, phase in               // when you come back to it
                 if phase == .active { Task { await store.syncNow() } }

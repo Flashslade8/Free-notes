@@ -34,6 +34,7 @@ struct NoteEditorView: View {
     @State private var zoom: CGFloat = 1.0
     @State private var baseZoom: CGFloat = 1.0
     @State private var viewportWidth: CGFloat = 0
+    @State private var viewportHeight: CGFloat = 0
     @State private var autoFit = true      // false once you zoom by hand
     private let minZoom: CGFloat = 0.5
     private let maxZoom: CGFloat = 3.0
@@ -44,6 +45,18 @@ struct NoteEditorView: View {
     // Insert PDF
     @State private var showImporter = false
     @State private var showPageTemplates = false
+
+    // Page turning
+    @State private var pageMode = false         // one page at a time, with a page-turn animation
+    @State private var pageIndex = 0
+    @State private var flipForward = true
+
+    // Audio
+    @StateObject private var recorder = AudioRecorderController()
+    @StateObject private var player = AudioPlayerController()
+    @State private var showRecordings = false
+    @State private var syncMode = false         // tap writing to hear what was being said
+    @State private var audioAlert: String?
     @State private var importError: String?
 
     // Undo / redo
@@ -64,43 +77,48 @@ struct NoteEditorView: View {
 
     private func editor(_ idx: Int) -> some View {
         GeometryReader { geo in
-            ScrollView([.vertical, .horizontal]) {
-                VStack(spacing: 10) {
-                    ForEach($store.notes[idx].pages) { $page in
-                        pageView(idx: idx, page: $page)
-                    }
+            Group {
+                if pageMode {
+                    pagedContent(idx: idx)
+                } else {
+                    scrollContent(idx: idx, width: geo.size.width)
                 }
-                .padding(.top, 8)
-                .padding(.bottom, 110)      // keeps the last page clear of the toolbar
-                .frame(minWidth: geo.size.width)
             }
-            .simultaneousGesture(
-                MagnifyGesture()
-                    .onChanged { setZoom(baseZoom * $0.magnification, commit: false) }
-                    .onEnded { setZoom(baseZoom * $0.magnification, commit: true) }
-            )
+            .animation(.easeInOut(duration: 0.3), value: pageMode)
             .onAppear {
                 viewportWidth = geo.size.width
-                fitWidth()                  // pages fill the screen, like a full-screen document
+                viewportHeight = geo.size.height
+                applyFit()
             }
-            .onChange(of: geo.size.width) { _, newWidth in
-                viewportWidth = newWidth
-                if autoFit { fitWidth() }   // stays full width when you rotate the device
+            .onChange(of: geo.size) { _, newSize in
+                viewportWidth = newSize.width
+                viewportHeight = newSize.height
+                applyFit()
+            }
+            .onChange(of: pageMode) { _, isPaged in
+                if !isPaged { autoFit = true }
+                pageIndex = min(pageIndex, max(0, (store.note(noteID)?.pages.count ?? 1) - 1))
+                applyFit()
             }
         }
         .background(Color(.systemGray5))
-        .overlay(alignment: .bottom) { StationeryBar(tools: tools) }   // floats over the page
+        .overlay { FloatingToolbar(tools: tools) }          // floats over the page; can be moved
+        .overlay(alignment: .bottomTrailing) { pagerOverlay(idx) }
+        .overlay(alignment: .top) { audioBars }
         .navigationTitle($store.notes[idx].title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbar(idx) }
         .sheet(item: $shareItem) { ShareSheet(url: $0.url) }
+        .sheet(isPresented: $showRecordings) {
+            RecordingsSheet(player: player, noteID: noteID)
+        }
+        .alert("Audio",
+               isPresented: Binding(get: { audioAlert != nil || recorder.errorMessage != nil },
+                                    set: { if !$0 { audioAlert = nil; recorder.errorMessage = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: { Text(audioAlert ?? recorder.errorMessage ?? "") }
         .sheet(isPresented: $showPageTemplates) {
-            TemplatePickerSheet { template in
-                if let n = store.notes.firstIndex(where: { $0.id == noteID }) {
-                    store.notes[n].pages.append(NotePage(template: template))
-                    Haptics.success()
-                }
-            }
+            TemplatePickerSheet { template in addPage(template) }
         }
         .fileImporter(isPresented: $showImporter, allowedContentTypes: [.pdf]) { result in
             switch result {
@@ -129,7 +147,11 @@ struct NoteEditorView: View {
         } message: {
             Text("This can't be undone.")
         }
-        .onDisappear { store.touch(noteID) }
+        .onDisappear {
+            finishRecording()       // a recording still running is saved, not lost
+            player.close()
+            store.touch(noteID)
+        }
         // Refresh the undo / redo buttons after a stroke, an undo or a redo.
         // (Not NSUndoManagerCheckpoint: checking canRedo posts that one itself, which loops forever.)
         .onReceive(NotificationCenter.default.publisher(for: .NSUndoManagerDidCloseUndoGroup)) { _ in undoTick += 1 }
@@ -137,14 +159,99 @@ struct NoteEditorView: View {
         .onReceive(NotificationCenter.default.publisher(for: .NSUndoManagerDidRedoChange)) { _ in undoTick += 1 }
     }
 
-    private func pageView(idx: Int, page: Binding<NotePage>) -> some View {
+    private func scrollContent(idx: Int, width: CGFloat) -> some View {
+        ScrollView([.vertical, .horizontal]) {
+            VStack(spacing: 10) {
+                ForEach($store.notes[idx].pages) { $page in
+                    pageView(idx: idx, page: $page, showBadge: true)
+                }
+            }
+            .padding(.top, 8)
+            .padding(.bottom, 110)      // keeps the last page clear of the toolbar
+            .frame(minWidth: width)
+        }
+        .simultaneousGesture(
+            MagnifyGesture()
+                .onChanged { setZoom(baseZoom * $0.magnification, commit: false) }
+                .onEnded { setZoom(baseZoom * $0.magnification, commit: true) }
+        )
+    }
+
+    /// One page fills the screen; changing page turns it like a book.
+    private func pagedContent(idx: Int) -> some View {
+        let pages: [NotePage] = store.notes[idx].pages
+        let index: Int = min(max(pageIndex, 0), max(pages.count - 1, 0))
+
+        return ZStack {
+            if pages.indices.contains(index) {
+                pageView(idx: idx, page: $store.notes[idx].pages[index], showBadge: false)
+                    .id(pages[index].id)
+                    .transition(flipForward ? .flipForward : .flipBackward)
+                    .zIndex(-Double(index))     // the earlier page always lies on top, like a book
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    @ViewBuilder
+    private func pagerOverlay(_ idx: Int) -> some View {
+        if pageMode {
+            let count: Int = store.notes[idx].pages.count
+            HStack(spacing: 4) {
+                Button { goToPage(pageIndex - 1) } label: {
+                    Image(systemName: "chevron.left").frame(width: 36, height: 36)
+                }
+                .disabled(pageIndex <= 0)
+                .keyboardShortcut(.leftArrow, modifiers: [])
+                .accessibilityLabel("Previous page")
+
+                Text("\(min(pageIndex, count - 1) + 1) / \(count)")
+                    .font(.subheadline.monospacedDigit().weight(.semibold))
+                    .frame(minWidth: 52)
+
+                Button { goToPage(pageIndex + 1) } label: {
+                    Image(systemName: "chevron.right").frame(width: 36, height: 36)
+                }
+                .disabled(pageIndex >= count - 1)
+                .keyboardShortcut(.rightArrow, modifiers: [])
+                .accessibilityLabel("Next page")
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .floatingCapsule()
+            .padding(.trailing, 16)
+            .padding(.bottom, 96)
+        }
+    }
+
+    private func goToPage(_ target: Int) {
+        let count = store.note(noteID)?.pages.count ?? 0
+        guard target >= 0, target < count, target != pageIndex else { return }
+        flipForward = target > pageIndex
+        Haptics.tap()
+        // Let the new direction apply first, then turn the page.
+        DispatchQueue.main.async {
+            withAnimation(.easeInOut(duration: 0.55)) { pageIndex = target }
+        }
+    }
+
+    private func addPage(_ template: PageTemplate) {
+        guard let n = store.notes.firstIndex(where: { $0.id == noteID }) else { return }
+        store.notes[n].pages.append(NotePage(template: template))
+        Haptics.success()
+        if pageMode { goToPage(store.notes[n].pages.count - 1) }
+    }
+
+    private func pageView(idx: Int, page: Binding<NotePage>, showBadge: Bool) -> some View {
         let note: Note = store.notes[idx]
         let pageID: UUID = page.wrappedValue.id
         let number: Int = (note.pages.firstIndex { $0.id == pageID } ?? 0) + 1
 
         return ZStack(alignment: .topTrailing) {
             pageSurface(note: note, page: page)
-            pageBadge(number: number, total: note.pages.count, pageID: pageID)
+            if showBadge {
+                pageBadge(number: number, total: note.pages.count, pageID: pageID)
+            }
         }
     }
 
@@ -158,8 +265,11 @@ struct NoteEditorView: View {
             backgroundLayer(note: note, page: value)
             canvasLayer(note: note, page: page, value: value)
             shapeLayer(pageID: value.id)
+            audioTapLayer(pageID: value.id)
         }
         .frame(width: width, height: height)
+        .clipShape(RoundedRectangle(cornerRadius: pageMode ? Theme.Radius.small : 0, style: .continuous))
+        .softShadow(radius: pageMode ? 18 : 0, y: pageMode ? 8 : 0)
     }
 
     @ViewBuilder
@@ -178,7 +288,7 @@ struct NoteEditorView: View {
                           tool: tools.canvasTool,
                           toolKey: tools.key,
                           pencilOnly: pencilOnly,
-                          interactive: !tools.isShape,
+                          interactive: !tools.isShape && !syncMode,
                           becomeActive: isFirst,
                           zoom: zoom,
                           revision: revision)
@@ -196,20 +306,22 @@ struct NoteEditorView: View {
         }
     }
 
-    /// Page number + delete button in the corner of each page.
+    /// A small page number in the corner. Tap it for page actions.
     private func pageBadge(number: Int, total: Int, pageID: UUID) -> some View {
-        HStack(spacing: 10) {
-            Text("\(number) / \(total)")
-                .font(.caption.monospacedDigit())
+        Menu {
             Button(role: .destructive) {
                 pageToDelete = pageID
             } label: {
-                Image(systemName: "trash")
+                Label(total <= 1 ? "Clear Page" : "Delete Page", systemImage: "trash")
             }
+        } label: {
+            Text("\(number) / \(total)")
+                .font(.caption.monospacedDigit().weight(.medium))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(.ultraThinMaterial, in: Capsule())
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(.ultraThinMaterial, in: Capsule())
         .padding(10)
     }
 
@@ -249,52 +361,160 @@ struct NoteEditorView: View {
             Button { undoManager?.redo() } label: { Image(systemName: "arrow.uturn.forward") }
                 .disabled(!canRedo)
 
-            Button { setZoom(zoom - 0.25, commit: true) } label: {
-                Image(systemName: "minus.magnifyingglass")
+            Button { Task { await toggleRecording() } } label: {
+                Image(systemName: recorder.state == .idle ? "mic" : "mic.fill")
+                    .foregroundStyle(recorder.state == .idle ? Color.accentColor : Color.red)
             }
-            .disabled(zoom <= minZoom)
+            .accessibilityLabel(recorder.state == .idle ? "Start recording" : "Stop recording")
 
-            Button("\(Int((zoom * 100).rounded()))%") { fitWidth() }
-                .monospacedDigit()
-
-            Button { setZoom(zoom + 0.25, commit: true) } label: {
-                Image(systemName: "plus.magnifyingglass")
+            if hasRecordings {
+                Button { showRecordings = true } label: { Image(systemName: "waveform") }
+                    .accessibilityLabel("Recordings")
+                Toggle(isOn: $syncMode) { Image(systemName: "hand.tap") }
+                    .toggleStyle(.button)
+                    .accessibilityLabel("Tap writing to hear it")
             }
-            .disabled(zoom >= maxZoom)
 
-            Toggle(isOn: $pencilOnly) { Image(systemName: "applepencil") }
-                .toggleStyle(.button)
+            moreMenu(idx)
+        }
+    }
 
-            Menu {
-                Picker("Paper", selection: Binding(
-                    get: { store.notes[idx].pages.first(where: { $0.pdfID == nil })?.template ?? .lined },
-                    set: { new in
-                        for i in store.notes[idx].pages.indices where store.notes[idx].pages[i].pdfID == nil {
-                            store.notes[idx].pages[i].template = new
-                        }
-                    })) {
-                    ForEach(PageTemplate.basic) { Text($0.rawValue).tag($0) }
+    /// Everything that isn't needed every minute lives here, so the top bar stays calm.
+    private func moreMenu(_ idx: Int) -> some View {
+        Menu {
+            Section("View") {
+                Picker("Layout", selection: $pageMode) {
+                    Label("Continuous Scroll", systemImage: "rectangle.split.1x2").tag(false)
+                    Label("One Page at a Time", systemImage: "book").tag(true)
                 }
-            } label: { Image(systemName: "square.grid.3x3") }
+                if !pageMode {
+                    Button { setZoom(zoom + 0.25, commit: true) } label: {
+                        Label("Zoom In", systemImage: "plus.magnifyingglass")
+                    }
+                    .disabled(zoom >= maxZoom)
+                    Button { setZoom(zoom - 0.25, commit: true) } label: {
+                        Label("Zoom Out", systemImage: "minus.magnifyingglass")
+                    }
+                    .disabled(zoom <= minZoom)
+                    Button { fitWidth() } label: {
+                        Label("Fit to Width (\(Int((zoom * 100).rounded()))%)",
+                              systemImage: "arrow.left.and.right")
+                    }
+                }
+            }
 
-            Menu {
-                Button {
-                    let template = store.notes[idx].pages.last(where: { $0.pdfID == nil })?.template ?? .lined
-                    store.notes[idx].pages.append(NotePage(template: template))
-                } label: { Label("Blank Page", systemImage: "doc") }
+            Section("Pages") {
+                Button { addPage(store.notes[idx].pages.last(where: { $0.pdfID == nil })?.template ?? .lined) } label: {
+                    Label("Add Blank Page", systemImage: "doc.badge.plus")
+                }
                 Button { showPageTemplates = true } label: {
                     Label("Page from Template…", systemImage: "doc.text.image")
                 }
                 Button { showImporter = true } label: {
                     Label("Insert PDF…", systemImage: "doc.richtext")
                 }
-            } label: { Image(systemName: "plus.rectangle.on.rectangle") }
-
-            Button {
-                if let url = PDFExporter.export(store.notes[idx]) {
-                    shareItem = ShareItem(url: url)
+                Menu {
+                    Picker("Paper", selection: Binding(
+                        get: { store.notes[idx].pages.first(where: { $0.pdfID == nil })?.template ?? .lined },
+                        set: { new in
+                            for i in store.notes[idx].pages.indices where store.notes[idx].pages[i].pdfID == nil {
+                                store.notes[idx].pages[i].template = new
+                            }
+                        })) {
+                        ForEach(PageTemplate.basic) { Text($0.rawValue).tag($0) }
+                    }
+                } label: { Label("Paper", systemImage: "square.grid.3x3") }
+                if pageMode, let current = currentPageID(idx) {
+                    Button(role: .destructive) { pageToDelete = current } label: {
+                        Label("Delete This Page", systemImage: "trash")
+                    }
                 }
-            } label: { Image(systemName: "square.and.arrow.up") }
+            }
+
+            Section {
+                Toggle(isOn: $pencilOnly) { Label("Apple Pencil Only", systemImage: "applepencil") }
+                Button {
+                    if let url = PDFExporter.export(store.notes[idx]) { shareItem = ShareItem(url: url) }
+                } label: { Label("Export as PDF…", systemImage: "square.and.arrow.up") }
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+        }
+        .accessibilityLabel("More")
+    }
+
+    private func currentPageID(_ idx: Int) -> UUID? {
+        let pages = store.notes[idx].pages
+        guard pages.indices.contains(pageIndex) else { return pages.last?.id }
+        return pages[pageIndex].id
+    }
+
+    // MARK: - Audio
+
+    private var hasRecordings: Bool {
+        !(store.note(noteID)?.recordings.isEmpty ?? true)
+    }
+
+    @ViewBuilder
+    private var audioBars: some View {
+        VStack(spacing: 8) {
+            if recorder.state != .idle {
+                RecorderPill(recorder: recorder, onStop: finishRecording)
+            }
+            if player.current != nil {
+                PlayerPill(player: player)
+            }
+            if syncMode {
+                Text("Tap any writing to hear what was being said")
+                    .font(.footnote.weight(.medium))
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(.regularMaterial, in: Capsule())
+            }
+        }
+        .padding(.top, 8)
+    }
+
+    @ViewBuilder
+    private func audioTapLayer(pageID: UUID) -> some View {
+        if syncMode {
+            TapOverlay(zoom: zoom) { point in handleAudioTap(pageID: pageID, point: point) }
+        }
+    }
+
+    private func toggleRecording() async {
+        if recorder.state == .idle {
+            await recorder.start()
+        } else {
+            finishRecording()
+        }
+    }
+
+    private func finishRecording() {
+        guard let recording = recorder.stop() else { return }
+        store.addRecording(recording, to: noteID)
+        Haptics.success()
+    }
+
+    /// Finds the writing under a tap, works out when it was written, and plays the audio from then.
+    private func handleAudioTap(pageID: UUID, point: CGPoint) {
+        guard let note = store.note(noteID),
+              let page = note.pages.first(where: { $0.id == pageID }),
+              let drawing = try? PKDrawing(data: page.drawingData),
+              let stroke = AudioSync.nearestStroke(in: drawing, to: point, maxDistance: 16) else { return }
+
+        let written = stroke.path.creationDate
+        guard let recording = note.recordings.first(where: { $0.offset(for: written) != nil }),
+              let offset = recording.offset(for: written) else {
+            audioAlert = "That writing wasn't made while a recording was running."
+            return
+        }
+        do {
+            // Start a couple of seconds early so the sentence being written is heard in full.
+            try player.open(recording, at: max(0, offset - 2), play: true)
+            Haptics.tap()
+        } catch {
+            audioAlert = error.localizedDescription
         }
     }
 
@@ -305,6 +525,24 @@ struct NoteEditorView: View {
         zoom = clamped
         autoFit = false
         if commit { baseZoom = clamped }
+    }
+
+    /// Fits the page to the screen for whichever layout is on.
+    private func applyFit() {
+        if pageMode {
+            fitWholePage()
+        } else if autoFit {
+            fitWidth()
+        }
+    }
+
+    /// One-page mode: the whole page is visible at once.
+    private func fitWholePage() {
+        guard viewportWidth > 0, viewportHeight > 0 else { return }
+        let fit = min(viewportWidth / PageMetrics.size.width,
+                      (viewportHeight - 32) / PageMetrics.size.height)
+        zoom = max(0.3, fit)
+        baseZoom = zoom
     }
 
     /// Zoom so the page fills the width of the screen.
@@ -338,6 +576,7 @@ struct NoteEditorView: View {
         } else {
             store.notes[n].pages.removeAll { $0.id == pageID }
             store.pruneAttachments(noteID)
+            pageIndex = min(pageIndex, max(0, store.notes[n].pages.count - 1))
         }
     }
 }

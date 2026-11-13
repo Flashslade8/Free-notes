@@ -35,9 +35,7 @@ struct RecorderPill: View {
         .font(.body)
         .padding(.horizontal, 18)
         .padding(.vertical, 10)
-        .background(.regularMaterial, in: Capsule())
-        .overlay(Capsule().stroke(.quaternary))
-        .shadow(color: .black.opacity(0.12), radius: 8, y: 3)
+        .floatingCapsule()
     }
 }
 
@@ -86,9 +84,7 @@ struct PlayerPill: View {
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 10)
-        .background(.regularMaterial, in: Capsule())
-        .overlay(Capsule().stroke(.quaternary))
-        .shadow(color: .black.opacity(0.12), radius: 8, y: 3)
+        .floatingCapsule()
     }
 }
 

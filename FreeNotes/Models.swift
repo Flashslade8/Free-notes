@@ -42,9 +42,10 @@ struct Note: Identifiable, Codable {
     var folderID: UUID? = nil
     var isFavorite = false
     var pdfs: [PDFAttachment] = []
+    var recordings: [NoteRecording] = []
 
     enum CodingKeys: String, CodingKey {
-        case id, title, createdAt, modifiedAt, pages, folderID, isFavorite, pdfs
+        case id, title, createdAt, modifiedAt, pages, folderID, isFavorite, pdfs, recordings
     }
 
     init() {}
@@ -60,6 +61,7 @@ struct Note: Identifiable, Codable {
         folderID = try c.decodeIfPresent(UUID.self, forKey: .folderID)
         isFavorite = try c.decodeIfPresent(Bool.self, forKey: .isFavorite) ?? false
         pdfs = try c.decodeIfPresent([PDFAttachment].self, forKey: .pdfs) ?? []
+        recordings = try c.decodeIfPresent([NoteRecording].self, forKey: .recordings) ?? []
     }
 
     var thumbnail: UIImage? {
@@ -87,6 +89,7 @@ struct Note: Identifiable, Codable {
         title == other.title && pages == other.pages
             && folderID == other.folderID && isFavorite == other.isFavorite
             && pdfs.count == other.pdfs.count
+            && recordings == other.recordings
     }
 }
 
@@ -177,10 +180,18 @@ final class NoteStore: ObservableObject {
 
     func delete(at offsets: IndexSet, from visible: [Note]) {
         let ids = offsets.map { visible[$0].id }
+        for id in ids { removeRecordingFiles(of: id) }
         notes.removeAll { ids.contains($0.id) }
     }
 
-    func deleteNote(_ id: UUID) { notes.removeAll { $0.id == id } }
+    func deleteNote(_ id: UUID) {
+        removeRecordingFiles(of: id)
+        notes.removeAll { $0.id == id }
+    }
+
+    private func removeRecordingFiles(of noteID: UUID) {
+        note(noteID)?.recordings.forEach { RecordingFiles.delete($0.id) }
+    }
 
     func touch(_ id: UUID) {
         if let i = notes.firstIndex(where: { $0.id == id }) {
@@ -213,8 +224,34 @@ final class NoteStore: ObservableObject {
             p.id = UUID()
             return p
         }
+        // A copy gets its own audio files, so deleting one note never removes the other's audio.
+        copy.recordings = copy.recordings.map { recording in
+            var r = recording
+            r.id = UUID()
+            RecordingFiles.copy(from: recording.id, to: r.id)
+            return r
+        }
         notes.insert(copy, at: 0)
         return copy
+    }
+
+    // MARK: - Recordings
+
+    func addRecording(_ recording: NoteRecording, to noteID: UUID) {
+        guard let i = notes.firstIndex(where: { $0.id == noteID }) else { return }
+        notes[i].recordings.append(recording)
+    }
+
+    func renameRecording(_ noteID: UUID, recordingID: UUID, to name: String) {
+        guard let i = notes.firstIndex(where: { $0.id == noteID }),
+              let r = notes[i].recordings.firstIndex(where: { $0.id == recordingID }) else { return }
+        notes[i].recordings[r].title = name
+    }
+
+    func deleteRecording(_ noteID: UUID, recordingID: UUID) {
+        guard let i = notes.firstIndex(where: { $0.id == noteID }) else { return }
+        RecordingFiles.delete(recordingID)
+        notes[i].recordings.removeAll { $0.id == recordingID }
     }
 
     // MARK: - PDFs

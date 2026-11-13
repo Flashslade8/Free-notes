@@ -84,15 +84,9 @@ struct FloatingToolbar: View {
 
     // MARK: Layout
 
-    private func stack(_ axis: Axis, spacing: CGFloat = 6) -> AnyLayout {
-        axis == .horizontal
-            ? AnyLayout(HStackLayout(spacing: spacing))
-            : AnyLayout(VStackLayout(spacing: spacing))
-    }
-
     private func expandedBar(in size: CGSize) -> some View {
         let axis = dock.axis
-        return stack(axis, spacing: 4) {
+        return AxisStack(axis: axis, spacing: 4) {
             grip(axis: axis, size: size)
 
             // If everything fits it just sits there; on small screens it scrolls.
@@ -128,7 +122,7 @@ struct FloatingToolbar: View {
     }
 
     private func toolRow(_ axis: Axis) -> some View {
-        stack(axis) {
+        AxisStack(axis: axis) {
             if show(.ballpoint) { toolButton(.ballpoint, symbol: "pencil.tip", label: "Ballpoint pen") }
             if show(.fountain) { toolButton(.fountain, symbol: "pencil.tip.crop.circle", label: "Fountain pen") }
             if show(.pencil) { toolButton(.pencil, symbol: "pencil", label: "Pencil") }
@@ -318,5 +312,25 @@ struct ToolbarCustomiseSheet: View {
             .toolbar { Button("Done") { dismiss() } }
         }
         .presentationDetents([.medium, .large])
+    }
+}
+
+/// A row or a column depending on the toolbar's edge.
+private struct AxisStack<Content: View>: View {
+    let axis: Axis
+    let spacing: CGFloat
+    let content: Content
+
+    init(axis: Axis, spacing: CGFloat = 6, @ViewBuilder content: () -> Content) {
+        self.axis = axis
+        self.spacing = spacing
+        self.content = content()
+    }
+
+    var body: some View {
+        let layout = axis == .horizontal
+            ? AnyLayout(HStackLayout(spacing: spacing))
+            : AnyLayout(VStackLayout(spacing: spacing))
+        layout { content }
     }
 }

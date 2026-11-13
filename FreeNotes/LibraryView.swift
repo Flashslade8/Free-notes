@@ -184,20 +184,12 @@ struct LibraryView: View {
                 Picker("Sort by", selection: $sortRaw) {
                     ForEach(SortOrder.allCases) { Text($0.rawValue).tag($0.rawValue) }
                 }
-            } label: { Image(systemName: "arrow.up.arrow.down") }
-
-            Button {
-                viewMode = viewMode == "grid" ? "list" : "grid"
-                Haptics.tap()
-            } label: {
-                Image(systemName: viewMode == "grid" ? "list.bullet" : "square.grid.2x2")
-            }
-
-            if scope != .favourites {
-                Button { ask(.newFolder(parent: currentFolderID)) } label: {
-                    Image(systemName: "folder.badge.plus")
+                Picker("View as", selection: $viewMode) {
+                    Label("Grid", systemImage: "square.grid.2x2").tag("grid")
+                    Label("List", systemImage: "list.bullet").tag("list")
                 }
-            }
+            } label: { Image(systemName: "line.3.horizontal.decrease.circle") }
+            .accessibilityLabel("Sort and view")
 
             Menu {
                 Button {
@@ -205,10 +197,16 @@ struct LibraryView: View {
                     Haptics.tap()
                     path.append(note.id)
                 } label: { Label("New Note", systemImage: "square.and.pencil") }
+                if scope != .favourites {
+                    Button { ask(.newFolder(parent: currentFolderID)) } label: {
+                        Label("New Folder", systemImage: "folder.badge.plus")
+                    }
+                }
                 Button { showImporter = true } label: {
                     Label("Import PDF…", systemImage: "doc.richtext")
                 }
             } label: { Image(systemName: "plus") }
+            .accessibilityLabel("New")
         }
     }
 
@@ -245,13 +243,14 @@ struct LibraryView: View {
                             Image(systemName: "star.fill").foregroundStyle(.yellow).padding(6)
                         }
                     }
-                    .shadow(color: .black.opacity(0.08), radius: 4, y: 2)
+                    .softShadow(radius: 5, y: 2)
                 Text(note.title).font(.subheadline.weight(.semibold)).lineLimit(1)
                 Text(note.modifiedAt.formatted(date: .abbreviated, time: .omitted))
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
         .buttonStyle(.plain)
+        .noteTransitionSource(note.id)
         .contextMenu { noteMenu(note) }
     }
 
@@ -276,6 +275,7 @@ struct LibraryView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .noteTransitionSource(note.id)
         .contextMenu { noteMenu(note) }
     }
 

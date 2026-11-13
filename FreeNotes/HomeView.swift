@@ -13,6 +13,7 @@ struct HomeView: View {
     @State private var selection: SidebarItem? = .home
     @State private var path = NavigationPath()
     @State private var columnVisibility = NavigationSplitViewVisibility.automatic
+    @Namespace private var noteNamespace
     @State private var search = ""
     @State private var showSettings = false
     @State private var showNewFolder = false
@@ -28,9 +29,13 @@ struct HomeView: View {
         } detail: {
             NavigationStack(path: $path) {
                 detailRoot
-                    .navigationDestination(for: UUID.self) { NoteEditorView(noteID: $0) }
+                    .navigationDestination(for: UUID.self) { id in
+                        NoteEditorView(noteID: id).noteTransitionDestination(id)
+                    }
             }
         }
+        .environment(\.noteNamespace, noteNamespace)
+        .animation(.smooth(duration: 0.25), value: selection)           // screens cross-fade
         .onChange(of: selection) { _, _ in path = NavigationPath() }   // leave an open note
         .onChange(of: path.count) { _, count in
             // An open note takes the whole screen; the sidebar comes back when you leave it.

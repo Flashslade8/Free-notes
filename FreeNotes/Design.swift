@@ -86,6 +86,10 @@ struct AccountMenu: View {
 
 struct SettingsView: View {
     @AppStorage("accent") private var accentRaw = AccentOption.blue.rawValue
+    @AppStorage("appearance") private var appearanceRaw = Appearance.system.rawValue
+    @AppStorage("toolbarDock") private var dockRaw = ToolbarDock.bottom.rawValue
+    @AppStorage("toolbarHidden") private var hiddenRaw = ""
+    @AppStorage("toolbarCollapsed") private var collapsed = false
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -112,6 +116,23 @@ struct SettingsView: View {
                         }
                     }
                     .padding(.vertical, 6)
+                }
+                Section("Appearance") {
+                    Picker("Mode", selection: $appearanceRaw) {
+                        ForEach(Appearance.allCases) { Text($0.rawValue).tag($0.rawValue) }
+                    }
+                    .pickerStyle(.segmented)
+                }
+                Section("Writing toolbar") {
+                    Button("Reset Position and Tools") {
+                        dockRaw = ToolbarDock.bottom.rawValue
+                        hiddenRaw = ""
+                        collapsed = false
+                        Haptics.tap()
+                    }
+                    Text("Drag the grip on the toolbar to move it to any edge. Touch and hold it to choose which tools it shows.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
                 Section("Storage") {
                     Text("Notes are saved on this device. When you're signed in with Google, they also sync through your Google Drive.")

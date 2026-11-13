@@ -19,6 +19,8 @@ targets:
         UILaunchScreen: {}
         # --- Google Sign-In: replace BOTH values (see instructions) ---
         GIDClientID: "730011780186-2ntocradonalqe2otvs97gn3v8uqvfb8.apps.googleusercontent.com"
+        NSMicrophoneUsageDescription: "Free Notes records audio so you can replay what was said while you wrote."
+        UIBackgroundModes: [audio]
         CFBundleURLTypes:
           - CFBundleURLSchemes:
               - "com.googleusercontent.apps.730011780186-2ntocradonalqe2otvs97gn3v8uqvfb8"

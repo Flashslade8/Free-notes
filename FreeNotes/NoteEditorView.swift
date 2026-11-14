@@ -55,7 +55,7 @@ struct NoteEditorView: View {
     @StateObject private var recorder = AudioRecorderController()
     @StateObject private var player = AudioPlayerController()
     @State private var showRecordings = false
-    @State private var syncMode = false         // tap writing to hear what was being said
+    @State private var transcriptFor: NoteRecording?
     @State private var audioAlert: String?
     @State private var importError: String?
 
@@ -111,6 +111,9 @@ struct NoteEditorView: View {
         .sheet(item: $shareItem) { ShareSheet(url: $0.url) }
         .sheet(isPresented: $showRecordings) {
             RecordingsSheet(player: player, noteID: noteID)
+        }
+        .sheet(item: $transcriptFor) { recording in
+            TranscriptSheet(player: player, noteID: noteID, recordingID: recording.id)
         }
         .alert("Audio",
                isPresented: Binding(get: { audioAlert != nil || recorder.errorMessage != nil },
@@ -264,6 +267,7 @@ struct NoteEditorView: View {
         return ZStack {
             backgroundLayer(note: note, page: value)
             canvasLayer(note: note, page: page, value: value)
+            playbackLayer(note: note, page: value)
             shapeLayer(pageID: value.id)
             audioTapLayer(pageID: value.id)
         }
@@ -292,6 +296,7 @@ struct NoteEditorView: View {
                           becomeActive: isFirst,
                           zoom: zoom,
                           revision: revision)
+            .opacity(syncMode ? 0 : 1)     // in playback mode the follow-along layer shows the ink
     }
 
     @ViewBuilder
@@ -361,19 +366,13 @@ struct NoteEditorView: View {
             Button { undoManager?.redo() } label: { Image(systemName: "arrow.uturn.forward") }
                 .disabled(!canRedo)
 
-            Button { Task { await toggleRecording() } } label: {
-                Image(systemName: recorder.state == .idle ? "mic" : "mic.fill")
-                    .foregroundStyle(recorder.state == .idle ? Color.accentColor : Color.red)
+            Button { Task { await micTapped() } } label: {
+                Image(systemName: micSymbol)
+                    .foregroundStyle(micColor)
             }
-            .accessibilityLabel(recorder.state == .idle ? "Start recording" : "Stop recording")
+            .accessibilityLabel(micLabel)
 
-            if hasRecordings {
-                Button { showRecordings = true } label: { Image(systemName: "waveform") }
-                    .accessibilityLabel("Recordings")
-                Toggle(isOn: $syncMode) { Image(systemName: "hand.tap") }
-                    .toggleStyle(.button)
-                    .accessibilityLabel("Tap writing to hear it")
-            }
+            playbackMenu
 
             moreMenu(idx)
         }
@@ -455,6 +454,92 @@ struct NoteEditorView: View {
         !(store.note(noteID)?.recordings.isEmpty ?? true)
     }
 
+    /// Playback mode is on while a recording is loaded. Writing is paused, and tapping
+    /// any of your writing jumps the audio to the moment you wrote it.
+    private var syncMode: Bool { player.current != nil }
+
+    private var micSymbol: String {
+        switch recorder.state {
+        case .idle: return "mic"
+        case .recording: return "mic.fill"
+        case .paused: return "pause.circle.fill"
+        }
+    }
+
+    private var micColor: Color {
+        switch recorder.state {
+        case .idle: return Color.accentColor
+        case .recording: return Color.red
+        case .paused: return Color.orange
+        }
+    }
+
+    private var micLabel: String {
+        switch recorder.state {
+        case .idle: return "Start recording"
+        case .recording: return "Pause recording"
+        case .paused: return "Resume recording"
+        }
+    }
+
+    /// Tap to start, tap again to pause, tap again to resume. Stop is on the floating bar.
+    private func micTapped() async {
+        switch recorder.state {
+        case .idle:
+            player.close()              // leave playback mode so you can write again
+            await recorder.start()
+        case .recording:
+            recorder.pause()
+        case .paused:
+            recorder.resume()
+        }
+    }
+
+    /// The play button next to the mic. Tap it to enter or leave playback mode.
+    @ViewBuilder
+    private var playbackMenu: some View {
+        if let note = store.note(noteID), !note.recordings.isEmpty {
+            let list: [NoteRecording] = note.recordings.sorted { $0.startedAt > $1.startedAt }
+            Menu {
+                ForEach(list) { recording in
+                    Button { openPlayback(recording) } label: {
+                        Label(recording.title, systemImage: "play.circle")
+                    }
+                }
+                Divider()
+                Button { showRecordings = true } label: {
+                    Label("Manage Recordings…", systemImage: "waveform")
+                }
+            } label: {
+                Image(systemName: player.current == nil ? "play.circle" : "play.circle.fill")
+            } primaryAction: {
+                if player.current != nil {
+                    player.close()
+                } else if let latest = list.first {
+                    openPlayback(latest)
+                }
+            }
+            .accessibilityLabel("Playback")
+        }
+    }
+
+    private func openPlayback(_ recording: NoteRecording) {
+        do {
+            try player.open(recording, at: 0, play: false)
+            Haptics.tap()
+        } catch {
+            audioAlert = error.localizedDescription
+        }
+    }
+
+    /// During playback the writing fills in as the audio reaches each moment.
+    @ViewBuilder
+    private func playbackLayer(note: Note, page: NotePage) -> some View {
+        if let recording = player.current {
+            PlaybackInkLayer(page: page, recording: recording, player: player, zoom: zoom)
+        }
+    }
+
     @ViewBuilder
     private var audioBars: some View {
         VStack(spacing: 8) {
@@ -462,14 +547,12 @@ struct NoteEditorView: View {
                 RecorderPill(recorder: recorder, onStop: finishRecording)
             }
             if player.current != nil {
-                PlayerPill(player: player)
-            }
-            if syncMode {
+                PlayerPill(player: player) { transcriptFor = player.current }
                 Text("Tap any writing to hear what was being said")
                     .font(.footnote.weight(.medium))
                     .padding(.horizontal, 14)
                     .padding(.vertical, 8)
-                    .background(.regularMaterial, in: Capsule())
+                    .floatingCapsule()
             }
         }
         .padding(.top, 8)
@@ -479,14 +562,6 @@ struct NoteEditorView: View {
     private func audioTapLayer(pageID: UUID) -> some View {
         if syncMode {
             TapOverlay(zoom: zoom) { point in handleAudioTap(pageID: pageID, point: point) }
-        }
-    }
-
-    private func toggleRecording() async {
-        if recorder.state == .idle {
-            await recorder.start()
-        } else {
-            finishRecording()
         }
     }
 

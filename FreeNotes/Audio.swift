@@ -1,6 +1,7 @@
 import SwiftUI
 import AVFoundation
 import PencilKit
+import Speech
 
 // MARK: - Data
 
@@ -18,6 +19,13 @@ struct RecordingMarker: Identifiable, Codable, Equatable {
 
 /// A lecture or conversation recorded inside a note.
 /// Only this description is synced. The audio file stays on the device that recorded it.
+/// One line of a transcript, with when it was said.
+struct TranscriptSegment: Identifiable, Codable, Equatable {
+    var id = UUID()
+    var time: TimeInterval          // seconds into the audio
+    var text: String
+}
+
 struct NoteRecording: Identifiable, Codable, Equatable {
     var id = UUID()
     var title: String
@@ -26,23 +34,33 @@ struct NoteRecording: Identifiable, Codable, Equatable {
     var duration: TimeInterval      // length of the audio itself (pauses not included)
     var pauses: [RecordingPause] = []
     var markers: [RecordingMarker] = []
+    var trimStart: TimeInterval? = nil      // seconds cut from the start of the original audio
+    var transcript: [TranscriptSegment]? = nil
+
+    var trim: TimeInterval { trimStart ?? 0 }
 
     var fileURL: URL { RecordingFiles.url(for: id) }
     var hasAudio: Bool { RecordingFiles.exists(id) }
 
     /// Where in the audio something written at `date` belongs, or nil if the
-    /// recording wasn't running then. Time spent paused is taken out.
+    /// recording wasn't running then (or that part was trimmed away).
+    /// Time spent paused is taken out.
     func offset(for date: Date) -> TimeInterval? {
         guard date >= startedAt, date <= endedAt else { return nil }
         var paused: TimeInterval = 0
+        var raw: TimeInterval?
         for pause in pauses.sorted(by: { $0.start < $1.start }) {
             if date >= pause.end {
                 paused += pause.end.timeIntervalSince(pause.start)
             } else if date > pause.start {
-                return max(0, pause.start.timeIntervalSince(startedAt) - paused)
+                raw = max(0, pause.start.timeIntervalSince(startedAt) - paused)
+                break
             }
         }
-        return max(0, date.timeIntervalSince(startedAt) - paused)
+        let untrimmed = raw ?? max(0, date.timeIntervalSince(startedAt) - paused)
+        let shifted = untrimmed - trim
+        guard shifted >= 0, shifted <= duration + 0.5 else { return nil }
+        return shifted
     }
 }
 
@@ -111,6 +129,14 @@ final class AudioRecorderController: ObservableObject {
     var elapsed: TimeInterval { recorder?.currentTime ?? 0 }
     var markerCount: Int { markers.count }
 
+    /// How loud the room is right now, from 0 (silent) to 1. Read by the on-screen meter.
+    var level: Float {
+        guard let recorder, state == .recording else { return 0 }
+        recorder.updateMeters()
+        let decibels = recorder.averagePower(forChannel: 0)      // about -60 (quiet) to 0 (loud)
+        return max(0, min(1, (decibels + 50) / 50))
+    }
+
     func start() async {
         guard state == .idle else { return }
         guard await AVAudioApplication.requestRecordPermission() else {
@@ -127,6 +153,7 @@ final class AudioRecorderController: ObservableObject {
                 AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
             ]
             let newRecorder = try AVAudioRecorder(url: RecordingFiles.url(for: id), settings: settings)
+            newRecorder.isMeteringEnabled = true
             guard newRecorder.prepareToRecord(), newRecorder.record() else {
                 errorMessage = "The recording couldn't start. Check that no other app is using the microphone."
                 return
@@ -224,6 +251,7 @@ final class AudioPlayerController: NSObject, ObservableObject, AVAudioPlayerDele
     @Published private(set) var current: NoteRecording?
     @Published private(set) var isPlaying = false
     @Published private(set) var rate: Float = 1
+    @Published private(set) var seekTick = 0      // changes on every jump so the screen follows along
 
     private var player: AVAudioPlayer?
 
@@ -265,6 +293,11 @@ final class AudioPlayerController: NSObject, ObservableObject, AVAudioPlayerDele
     func seek(to time: TimeInterval) {
         guard let player else { return }
         player.currentTime = min(max(0, time), player.duration)
+        seekTick &+= 1
+    }
+
+    func skip(by seconds: TimeInterval) {
+        seek(to: currentTime + seconds)
     }
 
     func setRate(_ newRate: Float) {
@@ -335,5 +368,213 @@ struct TapOverlay: UIViewRepresentable {
             let z = max(parent.zoom, 0.01)
             parent.onTap(CGPoint(x: point.x / z, y: point.y / z))
         }
+    }
+}
+
+
+// MARK: - Trimming, splitting and importing
+
+enum AudioEditing {
+    enum Failure: LocalizedError {
+        case exportFailed
+        var errorDescription: String? { "The audio couldn't be processed." }
+    }
+
+    /// Writes the part of `source` between `start` and `end` seconds to `destination` as .m4a.
+    static func export(source: URL, from start: TimeInterval, to end: TimeInterval, destination: URL) async throws {
+        let asset = AVURLAsset(url: source)
+        let total = (try? await asset.load(.duration).seconds) ?? end
+        let stop = min(end, total.isFinite ? total : end)
+        guard stop > start,
+              let session = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetAppleM4A) else {
+            throw Failure.exportFailed
+        }
+        session.timeRange = CMTimeRange(start: CMTime(seconds: start, preferredTimescale: 600),
+                                        end: CMTime(seconds: stop, preferredTimescale: 600))
+        try? FileManager.default.removeItem(at: destination)
+
+        if #available(iOS 18.0, *) {
+            try await session.export(to: destination, as: .m4a)
+        } else {
+            session.outputURL = destination
+            session.outputFileType = .m4a
+            await session.export()
+            guard session.status == .completed else { throw Failure.exportFailed }
+        }
+    }
+
+    /// Brings an audio file (an MP3, a voice memo, anything iOS can play) into a note.
+    static func importFile(_ url: URL) async throws -> NoteRecording {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+
+        let asset = AVURLAsset(url: url)
+        let total = try await asset.load(.duration).seconds
+        guard total.isFinite, total > 0 else { throw Failure.exportFailed }
+
+        let id = UUID()
+        try await export(source: url, from: 0, to: total, destination: RecordingFiles.url(for: id))
+        let now = Date()
+        // Same start and end time: nothing you wrote is linked to an imported file.
+        return NoteRecording(id: id, title: url.deletingPathExtension().lastPathComponent,
+                             startedAt: now, endedAt: now, duration: total)
+    }
+}
+
+extension NoteStore {
+    private func changeRecording(_ noteID: UUID, _ recordingID: UUID, _ change: (inout NoteRecording) -> Void) {
+        guard let i = notes.firstIndex(where: { $0.id == noteID }),
+              let r = notes[i].recordings.firstIndex(where: { $0.id == recordingID }) else { return }
+        var recording = notes[i].recordings[r]
+        change(&recording)
+        notes[i].recordings[r] = recording
+    }
+
+    func setTranscript(_ noteID: UUID, recordingID: UUID, segments: [TranscriptSegment]) {
+        changeRecording(noteID, recordingID) { $0.transcript = segments }
+    }
+
+    /// Cuts a recording down to the part between `start` and `end` seconds.
+    func trimRecording(noteID: UUID, recordingID: UUID, from start: TimeInterval, to end: TimeInterval) async throws {
+        guard let recording = note(noteID)?.recordings.first(where: { $0.id == recordingID }) else { return }
+        let temp = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).m4a")
+        try await AudioEditing.export(source: recording.fileURL, from: start, to: end, destination: temp)
+        _ = try FileManager.default.replaceItemAt(recording.fileURL, withItemAt: temp)
+
+        changeRecording(noteID, recordingID) { r in
+            let length = end - start
+            r.trimStart = r.trim + start
+            r.duration = length
+            r.markers = r.markers.compactMap { marker in
+                var m = marker
+                m.time -= start
+                return (m.time >= 0 && m.time <= length) ? m : nil
+            }
+            r.transcript = r.transcript?.compactMap { segment in
+                var s = segment
+                s.time -= start
+                return (s.time >= 0 && s.time <= length) ? s : nil
+            }
+        }
+    }
+
+    /// Splits one recording into two at `time` seconds.
+    func splitRecording(noteID: UUID, recordingID: UUID, at time: TimeInterval) async throws {
+        guard let note = note(noteID),
+              let recording = note.recordings.first(where: { $0.id == recordingID }),
+              time > 1, time < recording.duration - 1 else { return }
+
+        let newID = UUID()
+        try await AudioEditing.export(source: recording.fileURL, from: time, to: recording.duration,
+                                      destination: RecordingFiles.url(for: newID))
+
+        let temp = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).m4a")
+        try await AudioEditing.export(source: recording.fileURL, from: 0, to: time, destination: temp)
+        _ = try FileManager.default.replaceItemAt(recording.fileURL, withItemAt: temp)
+
+        var second = recording
+        second.id = newID
+        second.title = recording.title + " (part 2)"
+        second.trimStart = recording.trim + time
+        second.duration = recording.duration - time
+        second.markers = recording.markers.filter { $0.time > time }.map {
+            var m = $0
+            m.time -= time
+            return m
+        }
+        second.transcript = recording.transcript?.filter { $0.time >= time }.map {
+            var s = $0
+            s.time -= time
+            return s
+        }
+
+        changeRecording(noteID, recordingID) { r in
+            r.duration = time
+            r.markers = r.markers.filter { $0.time <= time }
+            r.transcript = r.transcript?.filter { $0.time < time }
+        }
+        addRecording(second, to: noteID)
+    }
+
+    func importAudio(from url: URL, to noteID: UUID) async throws {
+        let recording = try await AudioEditing.importFile(url)
+        addRecording(recording, to: noteID)
+    }
+}
+
+// MARK: - Transcripts (on the device, free)
+
+enum Transcriber {
+    enum Failure: LocalizedError {
+        case notAllowed, unavailable
+        var errorDescription: String? {
+            switch self {
+            case .notAllowed:
+                return "Speech recognition is off. Turn it on in Settings › Free Notes."
+            case .unavailable:
+                return "On-device speech recognition isn't available for your language on this device, so the audio stays untranscribed."
+            }
+        }
+    }
+
+    /// Turns speech into text without sending the audio anywhere.
+    static func transcribe(_ url: URL) async throws -> [TranscriptSegment] {
+        let status = await withCheckedContinuation { (continuation: CheckedContinuation<SFSpeechRecognizerAuthorizationStatus, Never>) in
+            SFSpeechRecognizer.requestAuthorization { continuation.resume(returning: $0) }
+        }
+        guard status == .authorized else { throw Failure.notAllowed }
+
+        let candidates = [Locale.current, Locale(identifier: "en-GB"), Locale(identifier: "en-US")]
+        guard let recognizer = candidates.compactMap({ SFSpeechRecognizer(locale: $0) })
+            .first(where: { $0.isAvailable && $0.supportsOnDeviceRecognition }) else {
+            throw Failure.unavailable
+        }
+
+        let request = SFSpeechURLRecognitionRequest(url: url)
+        request.requiresOnDeviceRecognition = true      // never uploads the audio
+        request.shouldReportPartialResults = false
+
+        return try await withCheckedThrowingContinuation { continuation in
+            var finished = false
+            recognizer.recognitionTask(with: request) { result, error in
+                if finished { return }
+                if let error {
+                    finished = true
+                    continuation.resume(throwing: error)
+                    return
+                }
+                guard let result, result.isFinal else { return }
+                finished = true
+                continuation.resume(returning: group(result.bestTranscription.segments))
+            }
+        }
+    }
+
+    /// Groups single words into short lines you can tap.
+    private static func group(_ words: [SFTranscriptionSegment]) -> [TranscriptSegment] {
+        var lines: [TranscriptSegment] = []
+        var current: [String] = []
+        var start: TimeInterval = 0
+        var lastEnd: TimeInterval = 0
+
+        func flush() {
+            if !current.isEmpty {
+                lines.append(TranscriptSegment(time: start, text: current.joined(separator: " ")))
+                current = []
+            }
+        }
+
+        for word in words {
+            if current.isEmpty {
+                start = word.timestamp
+            } else if word.timestamp - lastEnd > 1.0 || current.count >= 14 {
+                flush()
+                start = word.timestamp
+            }
+            current.append(word.substring)
+            lastEnd = word.timestamp + word.duration
+        }
+        flush()
+        return lines
     }
 }

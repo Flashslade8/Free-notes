@@ -98,7 +98,8 @@ struct FloatingToolbar: View {
 
     private func expandedBar(in size: CGSize) -> some View {
         let axis = dock.axis
-        return stack(axis, spacing: 4) {
+        let layout = stack(axis, spacing: 4)
+        return layout {
             grip(axis: axis, size: size)
 
             // If everything fits it just sits there; on small screens it scrolls.
@@ -134,7 +135,8 @@ struct FloatingToolbar: View {
     }
 
     private func toolRow(_ axis: Axis) -> some View {
-        stack(axis) {
+        let layout = stack(axis)
+        return layout {
             if show(.ballpoint) { toolButton(.ballpoint, symbol: "pencil.tip", label: "Ballpoint pen") }
             if show(.fountain) { toolButton(.fountain, symbol: "pencil.tip.crop.circle", label: "Fountain pen") }
             if show(.pencil) { toolButton(.pencil, symbol: "pencil", label: "Pencil") }

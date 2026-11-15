@@ -24,6 +24,7 @@ enum Stationery: Hashable {
     case eraserStroke, eraserPixel
     case lasso
     case shape(ShapeKind)
+    case objects            // text boxes and pictures
 }
 
 /// The selected tool, colour and thickness.
@@ -32,20 +33,14 @@ final class ToolState: ObservableObject {
     @Published var tool: Stationery = .ballpoint
     @Published var colorIndex = 0
     @Published var width: CGFloat = 4
+    @Published var customColor: UIColor? = nil     // chosen with the colour picker
+    @Published var rulerOn = false
     private(set) var lastEraser: Stationery = .eraserStroke
     private(set) var lastShape: ShapeKind = .rectangle
 
-    static let palette: [UIColor] = [
-        UIColor(red: 0.10, green: 0.10, blue: 0.12, alpha: 1),   // black
-        UIColor(red: 0.10, green: 0.40, blue: 0.95, alpha: 1),   // blue
-        UIColor(red: 0.90, green: 0.20, blue: 0.20, alpha: 1),   // red
-        UIColor(red: 0.15, green: 0.65, blue: 0.30, alpha: 1),   // green
-        UIColor(red: 0.98, green: 0.55, blue: 0.10, alpha: 1),   // orange
-        UIColor(red: 0.55, green: 0.30, blue: 0.85, alpha: 1),   // purple
-        UIColor(red: 1.00, green: 0.85, blue: 0.10, alpha: 1)    // yellow
-    ]
+    static let palette: [UIColor] = InkPalette.colors
 
-    var color: UIColor { Self.palette[colorIndex] }
+    var color: UIColor { customColor ?? Self.palette[colorIndex] }
 
     var isEraser: Bool { tool == .eraserStroke || tool == .eraserPixel }
 
@@ -56,13 +51,13 @@ final class ToolState: ObservableObject {
 
     var usesColor: Bool {
         switch tool {
-        case .eraserStroke, .eraserPixel, .lasso: return false
+        case .eraserStroke, .eraserPixel, .lasso, .objects: return false
         default: return true
         }
     }
 
     /// Changes whenever the canvas needs to be given a new tool.
-    var key: String { "\(tool)-\(colorIndex)-\(Int(width * 10))" }
+    var key: String { "\(tool)-\(colorIndex)-\(customColor?.description ?? "-")-\(Int(width * 10))" }
 
     var canvasTool: PKTool {
         switch tool {
@@ -74,6 +69,7 @@ final class ToolState: ObservableObject {
         case .eraserPixel: return PKEraserTool(.bitmap)
         case .lasso: return PKLassoTool()
         case .shape: return PKInkingTool(.pen, color: color, width: width)   // not used while drawing shapes
+        case .objects: return PKInkingTool(.pen, color: color, width: width)  // not used while editing text boxes
         }
     }
 

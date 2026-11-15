@@ -31,6 +31,7 @@ struct NotePage: Identifiable, Codable, Equatable {
     var template: PageTemplate = .lined
     var pdfID: UUID? = nil          // set when this page sits on top of an imported PDF page
     var pdfPageIndex: Int? = nil
+    var objects: [PageObject]? = nil      // text boxes and pictures
 }
 
 struct Note: Identifiable, Codable {

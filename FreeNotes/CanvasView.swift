@@ -24,6 +24,7 @@ struct CanvasView: UIViewRepresentable {
     let becomeActive: Bool
     let zoom: CGFloat
     let revision: Int           // changes when the drawing is replaced from outside (shapes, undo)
+    let rulerActive: Bool
 
     func makeUIView(context: Context) -> ZoomableCanvas {
         let canvas = ZoomableCanvas()
@@ -43,6 +44,7 @@ struct CanvasView: UIViewRepresentable {
         canvas.targetZoom = zoom
         canvas.tool = tool
         canvas.isUserInteractionEnabled = interactive
+        canvas.isRulerActive = rulerActive
 
         context.coordinator.toolKey = toolKey
         context.coordinator.revision = revision
@@ -58,6 +60,7 @@ struct CanvasView: UIViewRepresentable {
         canvas.targetZoom = zoom
         canvas.setNeedsLayout()
         canvas.isUserInteractionEnabled = interactive
+        if canvas.isRulerActive != rulerActive { canvas.isRulerActive = rulerActive }
 
         if coordinator.toolKey != toolKey {
             canvas.tool = tool

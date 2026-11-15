@@ -28,7 +28,7 @@ enum ToolbarDock: String, CaseIterable, Identifiable {
 
 /// The tools that can be shown or hidden on the toolbar.
 enum BarTool: String, CaseIterable, Identifiable {
-    case ballpoint, fountain, pencil, highlighter, eraser, lasso, shapes
+    case ballpoint, fountain, pencil, highlighter, eraser, lasso, shapes, text, image, ruler, presets
     var id: String { rawValue }
 
     var title: String {
@@ -40,6 +40,10 @@ enum BarTool: String, CaseIterable, Identifiable {
         case .eraser: return "Eraser"
         case .lasso: return "Select"
         case .shapes: return "Shapes"
+        case .text: return "Text boxes"
+        case .image: return "Insert image"
+        case .ruler: return "Ruler"
+        case .presets: return "Pen presets"
         }
     }
 }
@@ -48,9 +52,11 @@ enum BarTool: String, CaseIterable, Identifiable {
 /// collapsed to a single button, and its tools can be chosen.
 struct FloatingToolbar: View {
     @ObservedObject var tools: ToolState
+    var onAddImage: () -> Void = {}
     @AppStorage("toolbarDock") private var dockRaw = ToolbarDock.bottom.rawValue
     @AppStorage("toolbarHidden") private var hiddenRaw = ""
     @AppStorage("toolbarCollapsed") private var collapsed = false
+    @AppStorage("penPresets") private var presetsRaw = ""
 
     @State private var drag: CGSize = .zero
     @State private var showCustomise = false
@@ -84,9 +90,15 @@ struct FloatingToolbar: View {
 
     // MARK: Layout
 
+    private func stack(_ axis: Axis, spacing: CGFloat = 6) -> AnyLayout {
+        axis == .horizontal
+            ? AnyLayout(HStackLayout(spacing: spacing))
+            : AnyLayout(VStackLayout(spacing: spacing))
+    }
+
     private func expandedBar(in size: CGSize) -> some View {
         let axis = dock.axis
-        return AxisStack(axis: axis, spacing: 4) {
+        return stack(axis, spacing: 4) {
             grip(axis: axis, size: size)
 
             // If everything fits it just sits there; on small screens it scrolls.
@@ -122,7 +134,7 @@ struct FloatingToolbar: View {
     }
 
     private func toolRow(_ axis: Axis) -> some View {
-        AxisStack(axis: axis) {
+        stack(axis) {
             if show(.ballpoint) { toolButton(.ballpoint, symbol: "pencil.tip", label: "Ballpoint pen") }
             if show(.fountain) { toolButton(.fountain, symbol: "pencil.tip.crop.circle", label: "Fountain pen") }
             if show(.pencil) { toolButton(.pencil, symbol: "pencil", label: "Pencil") }
@@ -130,6 +142,19 @@ struct FloatingToolbar: View {
             if show(.eraser) { eraserMenu }
             if show(.lasso) { toolButton(.lasso, symbol: "lasso", label: "Select") }
             if show(.shapes) { shapeMenu }
+            if show(.text) { toolButton(.objects, symbol: "textformat", label: "Text boxes") }
+            if show(.image) {
+                Button { onAddImage() } label: { icon("photo", selected: false) }
+                    .accessibilityLabel("Insert image")
+            }
+            if show(.ruler) {
+                Button {
+                    tools.rulerOn.toggle()
+                    Haptics.tap()
+                } label: { icon("ruler", selected: tools.rulerOn) }
+                .accessibilityLabel("Ruler")
+            }
+            if show(.presets) { presetsMenu }
 
             if tools.usesColor {
                 Capsule()
@@ -137,6 +162,7 @@ struct FloatingToolbar: View {
                     .frame(width: axis == .horizontal ? 1 : 26, height: axis == .horizontal ? 26 : 1)
                     .padding(axis == .horizontal ? .horizontal : .vertical, 6)
                 ForEach(ToolState.palette.indices, id: \.self) { index in colorDot(index) }
+                customColorWell
                 Slider(value: $tools.width, in: 1...24)
                     .frame(width: 110)
                     .padding(axis == .horizontal ? .leading : .top, 8)
@@ -183,6 +209,7 @@ struct FloatingToolbar: View {
         case .eraserStroke, .eraserPixel: return "eraser"
         case .lasso: return "lasso"
         case .shape(let kind): return kind.symbol
+        case .objects: return "textformat"
         }
     }
 
@@ -253,14 +280,98 @@ struct FloatingToolbar: View {
         .accessibilityLabel("Shapes")
     }
 
+    /// Any colour at all, from the system colour picker.
+    private var customColorWell: some View {
+        ColorPicker("Custom colour", selection: Binding(
+            get: { Color(uiColor: tools.color) },
+            set: {
+                tools.customColor = UIColor($0)
+                Haptics.tap()
+            }), supportsOpacity: false)
+            .labelsHidden()
+            .frame(width: 34, height: 34)
+    }
+
+    // MARK: Pen presets
+
+    private var presets: [PenPreset] {
+        (try? JSONDecoder().decode([PenPreset].self, from: Data(presetsRaw.utf8))) ?? []
+    }
+
+    private func store(_ list: [PenPreset]) {
+        if let data = try? JSONEncoder().encode(list), let text = String(data: data, encoding: .utf8) {
+            presetsRaw = text
+        }
+    }
+
+    private var currentPenName: String? {
+        switch tools.tool {
+        case .ballpoint: return "ballpoint"
+        case .fountain: return "fountain"
+        case .pencil: return "pencil"
+        case .highlighter: return "highlighter"
+        default: return nil
+        }
+    }
+
+    private func title(for preset: PenPreset) -> String {
+        preset.tool.capitalized + " · " + Int(preset.width).description + " pt"
+    }
+
+    private func apply(_ preset: PenPreset) {
+        switch preset.tool {
+        case "fountain": tools.tool = .fountain
+        case "pencil": tools.tool = .pencil
+        case "highlighter": tools.tool = .highlighter
+        default: tools.tool = .ballpoint
+        }
+        tools.customColor = UIColor(red: preset.red, green: preset.green, blue: preset.blue, alpha: 1)
+        tools.width = CGFloat(preset.width)
+        Haptics.tap()
+    }
+
+    private func saveCurrentPreset() {
+        guard let name = currentPenName else { return }
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        tools.color.getRed(&r, green: &g, blue: &b, alpha: &a)
+        var list = presets
+        list.append(PenPreset(tool: name, red: Double(r), green: Double(g), blue: Double(b), width: Double(tools.width)))
+        store(Array(list.suffix(12)))
+        Haptics.success()
+    }
+
+    private var presetsMenu: some View {
+        Menu {
+            ForEach(presets) { preset in
+                Button(title(for: preset)) { apply(preset) }
+            }
+            if !presets.isEmpty {
+                Menu("Remove Preset") {
+                    ForEach(presets) { preset in
+                        Button(title(for: preset), role: .destructive) {
+                            store(presets.filter { $0.id != preset.id })
+                        }
+                    }
+                }
+                Divider()
+            }
+            Button { saveCurrentPreset() } label: { Label("Save Current Pen", systemImage: "plus") }
+                .disabled(currentPenName == nil)
+        } label: {
+            icon("bookmark", selected: false)
+        }
+        .accessibilityLabel("Pen presets")
+    }
+
     private func colorDot(_ index: Int) -> some View {
-        let selected = tools.colorIndex == index
+        let selected = tools.customColor == nil && tools.colorIndex == index
         return Circle()
             .fill(Color(uiColor: ToolState.palette[index]))
             .frame(width: 26, height: 26)
             .overlay(Circle().stroke(Color.accentColor, lineWidth: selected ? 3 : 0).padding(-4))
             .padding(4)
             .onTapGesture {
+                tools.customColor = nil
                 tools.colorIndex = index
                 Haptics.tap()
             }
@@ -315,22 +426,13 @@ struct ToolbarCustomiseSheet: View {
     }
 }
 
-/// A row or a column depending on the toolbar's edge.
-private struct AxisStack<Content: View>: View {
-    let axis: Axis
-    let spacing: CGFloat
-    let content: Content
 
-    init(axis: Axis, spacing: CGFloat = 6, @ViewBuilder content: () -> Content) {
-        self.axis = axis
-        self.spacing = spacing
-        self.content = content()
-    }
-
-    var body: some View {
-        let layout = axis == .horizontal
-            ? AnyLayout(HStackLayout(spacing: spacing))
-            : AnyLayout(VStackLayout(spacing: spacing))
-        layout { content }
-    }
+/// A saved pen: which tool, colour and thickness.
+struct PenPreset: Codable, Identifiable, Equatable {
+    var id = UUID()
+    var tool: String
+    var red: Double
+    var green: Double
+    var blue: Double
+    var width: Double
 }

@@ -1,6 +1,7 @@
 import SwiftUI
 import PencilKit
 import PDFKit
+import PhotosUI
 import UniformTypeIdentifiers
 
 struct ShareItem: Identifiable {
@@ -56,6 +57,13 @@ struct NoteEditorView: View {
     @StateObject private var player = AudioPlayerController()
     @State private var showRecordings = false
     @State private var transcriptFor: NoteRecording?
+
+    // Text boxes and pictures
+    @State private var selectedObjectID: UUID?
+    @State private var visiblePageID: UUID?
+    @State private var showPhotoPicker = false
+    @State private var photoItem: PhotosPickerItem?
+    @State private var imageAlert: String?
     @State private var audioAlert: String?
     @State private var importError: String?
 
@@ -102,7 +110,7 @@ struct NoteEditorView: View {
             }
         }
         .background(Color(.systemGray5))
-        .overlay { FloatingToolbar(tools: tools) }          // floats over the page; can be moved
+        .overlay { FloatingToolbar(tools: tools, onAddImage: { showPhotoPicker = true }) }          // floats over the page; can be moved
         .overlay(alignment: .bottomTrailing) { pagerOverlay(idx) }
         .overlay(alignment: .top) { audioBars }
         .navigationTitle($store.notes[idx].title)
@@ -115,6 +123,16 @@ struct NoteEditorView: View {
         .sheet(item: $transcriptFor) { recording in
             TranscriptSheet(player: player, noteID: noteID, recordingID: recording.id)
         }
+        .photosPicker(isPresented: $showPhotoPicker, selection: $photoItem, matching: .images)
+        .onChange(of: photoItem) { _, item in
+            if let item { Task { await insertPhoto(item) } }
+        }
+        .onChange(of: tools.tool) { _, _ in selectedObjectID = nil }
+        .alert("Couldn't add the picture",
+               isPresented: Binding(get: { imageAlert != nil },
+                                    set: { if !$0 { imageAlert = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: { Text(imageAlert ?? "") }
         .alert("Audio",
                isPresented: Binding(get: { audioAlert != nil || recorder.errorMessage != nil },
                                     set: { if !$0 { audioAlert = nil; recorder.errorMessage = nil } })) {
@@ -169,10 +187,12 @@ struct NoteEditorView: View {
                     pageView(idx: idx, page: $page, showBadge: true)
                 }
             }
+            .scrollTargetLayout()
             .padding(.top, 8)
             .padding(.bottom, 110)      // keeps the last page clear of the toolbar
             .frame(minWidth: width)
         }
+        .scrollPosition(id: $visiblePageID)
         .simultaneousGesture(
             MagnifyGesture()
                 .onChanged { setZoom(baseZoom * $0.magnification, commit: false) }
@@ -266,6 +286,7 @@ struct NoteEditorView: View {
 
         return ZStack {
             backgroundLayer(note: note, page: value)
+            objectsLayer(page: page)
             canvasLayer(note: note, page: page, value: value)
             playbackLayer(note: note, page: value)
             shapeLayer(pageID: value.id)
@@ -292,10 +313,11 @@ struct NoteEditorView: View {
                           tool: tools.canvasTool,
                           toolKey: tools.key,
                           pencilOnly: pencilOnly,
-                          interactive: !tools.isShape && !syncMode,
+                          interactive: !tools.isShape && !syncMode && tools.tool != .objects,
                           becomeActive: isFirst,
                           zoom: zoom,
-                          revision: revision)
+                          revision: revision,
+                          rulerActive: tools.rulerOn && value.id == activePageID())
             .opacity(syncMode ? 0 : 1)     // in playback mode the follow-along layer shows the ink
     }
 
@@ -328,6 +350,71 @@ struct NoteEditorView: View {
                 .background(.ultraThinMaterial, in: Capsule())
         }
         .padding(10)
+    }
+
+    // MARK: - Text boxes and pictures
+
+    /// The page that is on screen: the current one in page mode, the top one when scrolling.
+    private func activePageID() -> UUID? {
+        guard let pages = store.note(noteID)?.pages else { return nil }
+        if pageMode {
+            return pages.indices.contains(pageIndex) ? pages[pageIndex].id : pages.last?.id
+        }
+        return visiblePageID ?? pages.first?.id
+    }
+
+    private func objectsBinding(_ page: Binding<NotePage>) -> Binding<[PageObject]> {
+        Binding(get: { page.wrappedValue.objects ?? [] },
+                set: { page.wrappedValue.objects = $0.isEmpty ? nil : $0 })
+    }
+
+    private func objectsLayer(page: Binding<NotePage>) -> some View {
+        PageObjectsLayer(objects: objectsBinding(page),
+                         selectedID: $selectedObjectID,
+                         zoom: zoom,
+                         editable: tools.tool == .objects,
+                         onTapEmpty: { point in handleObjectTap(page, point) })
+    }
+
+    /// Tapping empty paper deselects; tapping again starts a new text box there.
+    private func handleObjectTap(_ page: Binding<NotePage>, _ point: CGPoint) {
+        if selectedObjectID != nil {
+            selectedObjectID = nil
+            return
+        }
+        let box = PageObject(kind: .text,
+                             x: min(max(0, point.x), PageMetrics.size.width - 220),
+                             y: min(max(0, point.y), PageMetrics.size.height - 60),
+                             width: 220, height: 60)
+        var list = page.wrappedValue.objects ?? []
+        list.append(box)
+        page.wrappedValue.objects = list
+        selectedObjectID = box.id
+        Haptics.tap()
+    }
+
+    private func insertPhoto(_ item: PhotosPickerItem) async {
+        defer { photoItem = nil }
+        guard let data = try? await item.loadTransferable(type: Data.self),
+              let prepared = ObjectImages.prepare(data) else {
+            imageAlert = "That picture couldn't be opened."
+            return
+        }
+        guard let n = store.notes.firstIndex(where: { $0.id == noteID }),
+              let pageID = activePageID(),
+              let p = store.notes[n].pages.firstIndex(where: { $0.id == pageID }) else { return }
+
+        let height = min(min(320, PageMetrics.size.width * 0.6) / prepared.aspect, PageMetrics.size.height * 0.7)
+        let width = height * prepared.aspect
+        let picture = PageObject(kind: .image,
+                                 x: (PageMetrics.size.width - width) / 2, y: 140,
+                                 width: width, height: height, imageData: prepared.data)
+        var list = store.notes[n].pages[p].objects ?? []
+        list.append(picture)
+        store.notes[n].pages[p].objects = list
+        tools.select(.objects)              // so it can be moved and resized straight away
+        selectedObjectID = picture.id
+        Haptics.success()
     }
 
     // MARK: - Shapes

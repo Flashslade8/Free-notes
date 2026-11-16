@@ -91,7 +91,18 @@ struct NoteEditorView: View {
 
     // MARK: - Editor
 
+    /// The editor is built in small steps. One long chain of modifiers is more than
+    /// Swift can type-check in reasonable time.
     private func editor(_ idx: Int) -> some View {
+        let content = editorContent(idx)
+        let withChrome = addChrome(to: content, idx: idx)
+        let withSheets = addSheets(to: withChrome)
+        let withAlerts = addAlerts(to: withSheets)
+        let withObservers = addObservers(to: withAlerts)
+        return addUndoObservers(to: withObservers)
+    }
+
+    private func editorContent(_ idx: Int) -> some View {
         GeometryReader { geo in
             Group {
                 if pageMode {
@@ -118,84 +129,128 @@ struct NoteEditorView: View {
             }
         }
         .background(Color(.systemGray5))
-        .overlay { FloatingToolbar(tools: tools, onAddImage: { showPhotoPicker = true }) }          // floats over the page; can be moved
-        .overlay(alignment: .bottomTrailing) { pagerOverlay(idx) }
-        .overlay(alignment: .top) { audioBars }
-        .navigationTitle($store.notes[idx].title)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar { toolbar(idx) }
-        .sheet(item: $shareItem) { ShareSheet(url: $0.url) }
-        .sheet(isPresented: $showRecordings) {
-            RecordingsSheet(player: player, noteID: noteID)
-        }
-        .sheet(isPresented: $showPages) {
-            PagesSheet(noteID: noteID, onSelect: jumpToPage)
-        }
-        .sheet(item: $transcriptFor) { recording in
-            TranscriptSheet(player: player, noteID: noteID, recordingID: recording.id)
-        }
-        .photosPicker(isPresented: $showPhotoPicker, selection: $photoItem, matching: .images)
-        .onChange(of: photoItem) { _, item in
-            if let item { Task { await insertPhoto(item) } }
-        }
-        .onChange(of: tools.tool) { _, _ in selectedObjectID = nil }
-        .onChange(of: findQuery) { _, _ in scheduleFind() }
-        .onChange(of: findActive) { _, active in
-            if !active {
-                findQuery = ""
-                findMatches = []
+    }
+
+    /// Floating controls, the title and the top bar.
+    private func addChrome<V: View>(to content: V, idx: Int) -> some View {
+        content
+            .overlay { FloatingToolbar(tools: tools, onAddImage: { showPhotoPicker = true }) }
+            .overlay(alignment: .bottomTrailing) { pagerOverlay(idx) }
+            .overlay(alignment: .top) { audioBars }
+            .navigationTitle($store.notes[idx].title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { toolbar(idx) }
+    }
+
+    private func addSheets<V: View>(to content: V) -> some View {
+        content
+            .sheet(item: $shareItem) { ShareSheet(url: $0.url) }
+            .sheet(isPresented: $showRecordings) { RecordingsSheet(player: player, noteID: noteID) }
+            .sheet(isPresented: $showPages) { PagesSheet(noteID: noteID, onSelect: jumpToPage) }
+            .sheet(item: $transcriptFor) { recording in
+                TranscriptSheet(player: player, noteID: noteID, recordingID: recording.id)
             }
-        }
-        .alert("Couldn't add the picture",
-               isPresented: Binding(get: { imageAlert != nil },
-                                    set: { if !$0 { imageAlert = nil } })) {
-            Button("OK", role: .cancel) {}
-        } message: { Text(imageAlert ?? "") }
-        .alert("Audio",
-               isPresented: Binding(get: { audioAlert != nil || recorder.errorMessage != nil },
-                                    set: { if !$0 { audioAlert = nil; recorder.errorMessage = nil } })) {
-            Button("OK", role: .cancel) {}
-        } message: { Text(audioAlert ?? recorder.errorMessage ?? "") }
-        .sheet(isPresented: $showPageTemplates) {
-            TemplatePickerSheet { template in addPage(template) }
-        }
-        .fileImporter(isPresented: $showImporter, allowedContentTypes: [.pdf]) { result in
-            switch result {
-            case .success(let url):
-                do {
-                    try store.insertPDF(from: url, into: noteID)
-                    Haptics.success()
-                } catch {
-                    importError = error.localizedDescription
+            .sheet(isPresented: $showPageTemplates) {
+                TemplatePickerSheet { template in addPage(template) }
+            }
+            .photosPicker(isPresented: $showPhotoPicker, selection: $photoItem, matching: .images)
+            .fileImporter(isPresented: $showImporter, allowedContentTypes: [.pdf],
+                          onCompletion: handleImportResult)
+    }
+
+    private func addAlerts<V: View>(to content: V) -> some View {
+        content
+            .alert("Couldn't add the picture", isPresented: imageAlertShown) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(imageAlert ?? "")
+            }
+            .alert("Audio", isPresented: audioAlertShown) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(audioAlert ?? recorder.errorMessage ?? "")
+            }
+            .alert("Couldn't insert PDF", isPresented: importErrorShown) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(importError ?? "")
+            }
+            .confirmationDialog(deleteTitle, isPresented: deleteDialogShown, titleVisibility: .visible) {
+                Button(deleteButtonLabel, role: .destructive) { deleteSelectedPage() }
+                Button("Cancel", role: .cancel) { pageToDelete = nil }
+            } message: {
+                Text("This can't be undone.")
+            }
+    }
+
+    private func addObservers<V: View>(to content: V) -> some View {
+        content
+            .onChange(of: photoItem) { _, item in
+                if let item { Task { await insertPhoto(item) } }
+            }
+            .onChange(of: tools.tool) { _, _ in selectedObjectID = nil }
+            .onChange(of: findQuery) { _, _ in scheduleFind() }
+            .onChange(of: findActive) { _, active in
+                if !active {
+                    findQuery = ""
+                    findMatches = []
                 }
-            case .failure(let error):
+            }
+            .onDisappear {
+                finishRecording()       // a recording still running is saved, not lost
+                player.close()
+                store.touch(noteID)
+            }
+    }
+
+    /// Refreshes the undo / redo buttons after a stroke, an undo or a redo.
+    /// (Not NSUndoManagerCheckpoint: checking canRedo posts that one itself, which loops forever.)
+    private func addUndoObservers<V: View>(to content: V) -> some View {
+        content
+            .onReceive(NotificationCenter.default.publisher(for: .NSUndoManagerDidCloseUndoGroup)) { _ in undoTick += 1 }
+            .onReceive(NotificationCenter.default.publisher(for: .NSUndoManagerDidUndoChange)) { _ in undoTick += 1 }
+            .onReceive(NotificationCenter.default.publisher(for: .NSUndoManagerDidRedoChange)) { _ in undoTick += 1 }
+    }
+
+    // MARK: Bindings for the alerts and dialogs
+
+    private var imageAlertShown: Binding<Bool> {
+        Binding<Bool>(get: { imageAlert != nil },
+                      set: { newValue in if !newValue { imageAlert = nil } })
+    }
+
+    private var audioAlertShown: Binding<Bool> {
+        Binding<Bool>(get: { audioAlert != nil || recorder.errorMessage != nil },
+                      set: { newValue in
+                          if !newValue {
+                              audioAlert = nil
+                              recorder.errorMessage = nil
+                          }
+                      })
+    }
+
+    private var importErrorShown: Binding<Bool> {
+        Binding<Bool>(get: { importError != nil },
+                      set: { newValue in if !newValue { importError = nil } })
+    }
+
+    private var deleteDialogShown: Binding<Bool> {
+        Binding<Bool>(get: { pageToDelete != nil },
+                      set: { newValue in if !newValue { pageToDelete = nil } })
+    }
+
+    private func handleImportResult(_ result: Result<URL, Error>) {
+        switch result {
+        case .success(let url):
+            do {
+                try store.insertPDF(from: url, into: noteID)
+                Haptics.success()
+            } catch {
                 importError = error.localizedDescription
             }
+        case .failure(let error):
+            importError = error.localizedDescription
         }
-        .alert("Couldn't insert PDF",
-               isPresented: Binding(get: { importError != nil },
-                                    set: { if !$0 { importError = nil } })) {
-            Button("OK", role: .cancel) {}
-        } message: { Text(importError ?? "") }
-        .confirmationDialog(deleteTitle,
-                            isPresented: Binding(get: { pageToDelete != nil },
-                                                 set: { if !$0 { pageToDelete = nil } }),
-                            titleVisibility: .visible) {
-            Button(deleteButtonLabel, role: .destructive) { deleteSelectedPage() }
-            Button("Cancel", role: .cancel) { pageToDelete = nil }
-        } message: {
-            Text("This can't be undone.")
-        }
-        .onDisappear {
-            finishRecording()       // a recording still running is saved, not lost
-            player.close()
-            store.touch(noteID)
-        }
-        // Refresh the undo / redo buttons after a stroke, an undo or a redo.
-        // (Not NSUndoManagerCheckpoint: checking canRedo posts that one itself, which loops forever.)
-        .onReceive(NotificationCenter.default.publisher(for: .NSUndoManagerDidCloseUndoGroup)) { _ in undoTick += 1 }
-        .onReceive(NotificationCenter.default.publisher(for: .NSUndoManagerDidUndoChange)) { _ in undoTick += 1 }
-        .onReceive(NotificationCenter.default.publisher(for: .NSUndoManagerDidRedoChange)) { _ in undoTick += 1 }
     }
 
     private func scrollContent(idx: Int, width: CGFloat) -> some View {

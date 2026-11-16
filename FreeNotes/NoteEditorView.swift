@@ -64,6 +64,14 @@ struct NoteEditorView: View {
     @State private var showPhotoPicker = false
     @State private var photoItem: PhotosPickerItem?
     @State private var imageAlert: String?
+
+    // Pages and find
+    @State private var showPages = false
+    @State private var findActive = false
+    @State private var findQuery = ""
+    @State private var findMatches: [FindMatch] = []
+    @State private var findIndex = 0
+    @State private var findTask: Task<Void, Never>?
     @State private var audioAlert: String?
     @State private var importError: String?
 
@@ -120,6 +128,9 @@ struct NoteEditorView: View {
         .sheet(isPresented: $showRecordings) {
             RecordingsSheet(player: player, noteID: noteID)
         }
+        .sheet(isPresented: $showPages) {
+            PagesSheet(noteID: noteID, onSelect: jumpToPage)
+        }
         .sheet(item: $transcriptFor) { recording in
             TranscriptSheet(player: player, noteID: noteID, recordingID: recording.id)
         }
@@ -128,6 +139,13 @@ struct NoteEditorView: View {
             if let item { Task { await insertPhoto(item) } }
         }
         .onChange(of: tools.tool) { _, _ in selectedObjectID = nil }
+        .onChange(of: findQuery) { _, _ in scheduleFind() }
+        .onChange(of: findActive) { _, active in
+            if !active {
+                findQuery = ""
+                findMatches = []
+            }
+        }
         .alert("Couldn't add the picture",
                isPresented: Binding(get: { imageAlert != nil },
                                     set: { if !$0 { imageAlert = nil } })) {
@@ -300,7 +318,7 @@ struct NoteEditorView: View {
     @ViewBuilder
     private func backgroundLayer(note: Note, page: NotePage) -> some View {
         if page.pdfID != nil {
-            PDFPageBackground(page: note.pdfPage(for: page))
+            PDFPageBackground(page: note.pdfPage(for: page), highlights: findHighlights(for: page.id))
         } else {
             PaperView(template: page.template)
         }
@@ -417,6 +435,59 @@ struct NoteEditorView: View {
         Haptics.success()
     }
 
+    // MARK: - Pages and find
+
+    /// Goes to a page, whichever layout is on.
+    private func jumpToPage(_ id: UUID) {
+        guard let pages = store.note(noteID)?.pages,
+              let index = pages.firstIndex(where: { $0.id == id }) else { return }
+        if pageMode {
+            goToPage(index)
+        } else {
+            withAnimation(.easeInOut(duration: 0.35)) { visiblePageID = id }
+        }
+    }
+
+    private func scheduleFind() {
+        findTask?.cancel()
+        findTask = Task {
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard !Task.isCancelled else { return }
+            runFind()
+        }
+    }
+
+    private func runFind() {
+        let query = findQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard query.count >= 2, let note = store.note(noteID) else {
+            findMatches = []
+            findIndex = 0
+            return
+        }
+        findMatches = FindEngine.matches(for: query, in: note)
+        findIndex = 0
+        if let first = findMatches.first { jumpToPage(first.pageID) }
+    }
+
+    private func stepFind(_ delta: Int) {
+        guard !findMatches.isEmpty else { return }
+        findIndex = (findIndex + delta + findMatches.count) % findMatches.count
+        jumpToPage(findMatches[findIndex].pageID)
+        Haptics.tap()
+    }
+
+    /// The yellow marks drawn on a PDF page; the match you're on is orange.
+    private func findHighlights(for pageID: UUID) -> [PDFHighlight] {
+        guard findActive, !findMatches.isEmpty else { return [] }
+        var result: [PDFHighlight] = []
+        for (index, match) in findMatches.enumerated() where match.pageID == pageID {
+            for rect in match.rects {
+                result.append(PDFHighlight(rect: rect, current: index == findIndex))
+            }
+        }
+        return result
+    }
+
     // MARK: - Shapes
 
     /// Adds finished shapes to a page's drawing, and makes the change undoable.
@@ -487,6 +558,11 @@ struct NoteEditorView: View {
                               systemImage: "arrow.left.and.right")
                     }
                 }
+            }
+
+            Section {
+                Button { showPages = true } label: { Label("Pages…", systemImage: "square.grid.2x2") }
+                Button { findActive = true } label: { Label("Find in Note…", systemImage: "magnifyingglass") }
             }
 
             Section("Pages") {
@@ -630,6 +706,10 @@ struct NoteEditorView: View {
     @ViewBuilder
     private var audioBars: some View {
         VStack(spacing: 8) {
+            if findActive {
+                FindBar(query: $findQuery, count: findMatches.count, index: findIndex,
+                        onStep: stepFind, onClose: { findActive = false })
+            }
             if recorder.state != .idle {
                 RecorderPill(recorder: recorder, onStop: finishRecording)
             }

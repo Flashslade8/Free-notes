@@ -33,10 +33,16 @@ extension Note {
     }
 }
 
+/// A found word on a PDF page. `rect` is in the PDF's own coordinates.
+struct PDFHighlight: Equatable {
+    var rect: CGRect
+    var current: Bool
+}
+
 enum PDFBackground {
     /// Draws a PDF page, scaled to fit and centred, into a context whose origin is top-left
     /// (the normal UIKit kind). It stays sharp at any size because the PDF is drawn as vectors.
-    static func draw(_ page: PDFPage, into ctx: CGContext, size: CGSize) {
+    static func draw(_ page: PDFPage, into ctx: CGContext, size: CGSize, highlights: [PDFHighlight] = []) {
         let box = page.bounds(for: .mediaBox)
         guard box.width > 0, box.height > 0 else { return }
         let scale = min(size.width / box.width, size.height / box.height)
@@ -48,6 +54,12 @@ enum PDFBackground {
         ctx.scaleBy(x: scale, y: -scale)
         ctx.translateBy(x: -box.minX, y: -box.minY)
         page.draw(with: .mediaBox, to: ctx)
+        for highlight in highlights {
+            ctx.setBlendMode(.multiply)
+            ctx.setFillColor((highlight.current ? UIColor.orange : UIColor.yellow).withAlphaComponent(0.6).cgColor)
+            ctx.fill(highlight.rect)
+        }
+        ctx.setBlendMode(.normal)
         ctx.restoreGState()
     }
 }
@@ -66,6 +78,10 @@ final class PDFBackgroundView: UIView {
         didSet { setNeedsDisplay() }
     }
 
+    var highlights: [PDFHighlight] = [] {
+        didSet { if oldValue != highlights { setNeedsDisplay() } }
+    }
+
     override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = .white
@@ -78,21 +94,24 @@ final class PDFBackgroundView: UIView {
         guard let ctx = UIGraphicsGetCurrentContext() else { return }
         UIColor.white.setFill()
         ctx.fill(bounds)
-        if let page { PDFBackground.draw(page, into: ctx, size: bounds.size) }
+        if let page { PDFBackground.draw(page, into: ctx, size: bounds.size, highlights: highlights) }
     }
 }
 
 struct PDFPageBackground: UIViewRepresentable {
     let page: PDFPage?
+    var highlights: [PDFHighlight] = []
 
     func makeUIView(context: Context) -> PDFBackgroundView {
         let view = PDFBackgroundView()
         view.page = page
+        view.highlights = highlights
         return view
     }
 
     func updateUIView(_ view: PDFBackgroundView, context: Context) {
         view.page = page
+        view.highlights = highlights
     }
 }
 

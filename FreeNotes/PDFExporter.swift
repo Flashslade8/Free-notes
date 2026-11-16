@@ -34,7 +34,7 @@ enum PDFExporter {
     }
 
     /// Text boxes and pictures sit under the ink, like on screen.
-    private static func drawObjects(_ objects: [PageObject]) {
+    static func drawObjects(_ objects: [PageObject]) {
         for object in objects {
             let rect = CGRect(x: object.x, y: object.y, width: object.width, height: object.height)
             switch object.kind {

@@ -76,7 +76,9 @@ struct LibraryView: View {
 
     private var visibleNotes: [Note] {
         if searching {
-            return sorted(store.notes.filter { $0.title.localizedCaseInsensitiveContains(searchText) })
+            return sorted(store.notes.filter {
+                $0.title.localizedCaseInsensitiveContains(searchText) || NoteIndex.contains($0, query: searchText)
+            })
         }
         switch scope {
         case .home, .notes: return sorted(store.notesInFolder(nil))

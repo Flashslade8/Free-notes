@@ -5,7 +5,14 @@ import PencilKit
 
 enum ShapeBuilder {
     /// The corner points of a shape dragged from `s` to `e`.
-    static func outline(_ kind: ShapeKind, from s: CGPoint, to e: CGPoint, headLength: CGFloat) -> [CGPoint] {
+    static func outline(_ kind: ShapeKind, from s: CGPoint, to e: CGPoint,
+                        headLength: CGFloat, minSide: CGFloat = 14) -> [CGPoint] {
+        // A closed shape dragged almost flat would vanish, so it always keeps a minimum size.
+        var e = e
+        if kind == .rectangle || kind == .ellipse || kind == .triangle {
+            if abs(e.x - s.x) < minSide { e.x = s.x + (e.x >= s.x ? minSide : -minSide) }
+            if abs(e.y - s.y) < minSide { e.y = s.y + (e.y >= s.y ? minSide : -minSide) }
+        }
         let minX = min(s.x, e.x), maxX = max(s.x, e.x)
         let minY = min(s.y, e.y), maxY = max(s.y, e.y)
 
@@ -41,7 +48,8 @@ enum ShapeBuilder {
     /// just like handwriting.
     static func strokes(_ kind: ShapeKind, from s: CGPoint, to e: CGPoint,
                         color: UIColor, width: CGFloat) -> [PKStroke] {
-        let corners = outline(kind, from: s, to: e, headLength: max(14, width * 4))
+        let strokeWidth = max(width, 2.5)           // very thin lines can disappear
+        let corners = outline(kind, from: s, to: e, headLength: max(14, strokeWidth * 4))
         let points = densify(corners, spacing: 3)
         guard points.count > 1 else { return [] }
 
@@ -49,7 +57,7 @@ enum ShapeBuilder {
         var time: TimeInterval = 0
         for p in points {
             controlPoints.append(PKStrokePoint(location: p, timeOffset: time,
-                                               size: CGSize(width: width, height: width),
+                                               size: CGSize(width: strokeWidth, height: strokeWidth),
                                                opacity: 1, force: 1,
                                                azimuth: 0, altitude: .pi / 2))
             time += 0.002
@@ -136,8 +144,14 @@ final class ShapeCaptureView: UIView {
     }
 
     @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
-        guard let start = origin else { return }
         let end = gesture.location(in: self)
+        if gesture.state == .began {
+            // Where the touch started is where it is now, minus how far it has already moved.
+            // This works the same for a finger and for the Apple Pencil.
+            let moved = gesture.translation(in: self)
+            origin = CGPoint(x: end.x - moved.x, y: end.y - moved.y)
+        }
+        guard let start = origin else { return }
 
         switch gesture.state {
         case .began, .changed:
@@ -160,13 +174,14 @@ final class ShapeCaptureView: UIView {
 
     private func showPreview(from s: CGPoint, to e: CGPoint) {
         let corners = ShapeBuilder.outline(kind, from: s, to: e,
-                                           headLength: max(14, lineWidth * 4) * zoom)
+                                           headLength: max(14, lineWidth * 4) * zoom,
+                                           minSide: 14 * zoom)
         let path = UIBezierPath()
         for (index, point) in corners.enumerated() {
             if index == 0 { path.move(to: point) } else { path.addLine(to: point) }
         }
         preview.path = path.cgPath
         preview.strokeColor = color.cgColor
-        preview.lineWidth = lineWidth * zoom
+        preview.lineWidth = max(lineWidth, 2.5) * zoom
     }
 }

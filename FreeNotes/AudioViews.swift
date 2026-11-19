@@ -211,13 +211,8 @@ struct RecordingsSheet: View {
             .sheet(item: $transcribing) { recording in
                 TranscriptSheet(player: player, noteID: noteID, recordingID: recording.id)
             }
-            .fileImporter(isPresented: $showImporter, allowedContentTypes: [.audio]) { result in
-                switch result {
-                case .success(let url):
-                    run { try await store.importAudio(from: url, to: noteID) }
-                case .failure(let error):
-                    errorText = error.localizedDescription
-                }
+            .documentPicker(isPresented: $showImporter, types: [.audio]) { url in
+                run { try await store.importAudio(from: url, to: noteID) }
             }
         }
         .presentationDetents([.medium, .large])

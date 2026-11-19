@@ -135,17 +135,12 @@ struct LibraryView: View {
             Button("Save") { commitPrompt() }
         }
         .sheet(item: $movingNote) { MoveNoteSheet(noteID: $0.id) }
-        .fileImporter(isPresented: $showImporter, allowedContentTypes: [.pdf]) { result in
-            switch result {
-            case .success(let url):
-                do {
-                    let note = try store.importPDF(from: url, into: currentFolderID)
-                    Haptics.success()
-                    path.append(note.id)
-                } catch {
-                    importError = error.localizedDescription
-                }
-            case .failure(let error):
+        .documentPicker(isPresented: $showImporter, types: [.pdf]) { url in
+            do {
+                let note = try store.importPDF(from: url, into: currentFolderID)
+                Haptics.success()
+                path.append(note.id)
+            } catch {
                 importError = error.localizedDescription
             }
         }

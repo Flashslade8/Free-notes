@@ -46,23 +46,22 @@ struct DashboardView: View {
             ToolbarItem(placement: .topBarTrailing) { newMenu }
         }
         .sheet(isPresented: $showTemplates) {
-            TemplatePickerSheet { template in
-                let note = store.addNote(in: nil, template: template)
+            TemplatePickerSheet { choice in
+                let note: Note
+                switch choice {
+                case .builtin(let template): note = store.addNote(in: nil, template: template)
+                case .custom(let template): note = store.addNote(in: nil, custom: template)
+                }
                 Haptics.success()
                 path.append(note.id)
             }
         }
-        .fileImporter(isPresented: $showImporter, allowedContentTypes: [.pdf]) { result in
-            switch result {
-            case .success(let url):
-                do {
-                    let note = try store.importPDF(from: url, into: nil)
-                    Haptics.success()
-                    path.append(note.id)
-                } catch {
-                    importError = error.localizedDescription
-                }
-            case .failure(let error):
+        .documentPicker(isPresented: $showImporter, types: [.pdf]) { url in
+            do {
+                let note = try store.importPDF(from: url, into: nil)
+                Haptics.success()
+                path.append(note.id)
+            } catch {
                 importError = error.localizedDescription
             }
         }
@@ -225,5 +224,6 @@ private struct RecentCard: View {
         }
         .buttonStyle(.plain)
         .noteTransitionSource(note.id)
+        .noteContextMenu(note.id)
     }
 }

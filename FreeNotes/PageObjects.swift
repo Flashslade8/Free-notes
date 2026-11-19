@@ -136,21 +136,44 @@ private struct ObjectBox: View {
     var body: some View {
         let width: CGFloat = object.width * zoom
         let height: CGFloat = object.height * zoom
+        let barAbove: Bool = object.y * zoom > 70
 
         return content(width: width, height: height)
             .frame(width: width, height: height, alignment: .topLeading)
+            // Only the box itself reacts to a tap. The controls around it must stay separate,
+            // or they can't be pressed.
+            .contentShape(Rectangle())
+            .onTapGesture { onSelect() }
+            .contextMenu {
+                if editable {
+                    Button(action: onDuplicate) { Label("Duplicate", systemImage: "plus.square.on.square") }
+                    Button(role: .destructive, action: onDelete) { Label("Delete", systemImage: "trash") }
+                }
+            }
             .overlay {
-                if active { Rectangle().stroke(Color.accentColor, lineWidth: 1.5) }
+                if active {
+                    Rectangle()
+                        .stroke(Color.accentColor, lineWidth: 1.5)
+                        .allowsHitTesting(false)
+                }
             }
             .overlay(alignment: .bottomTrailing) {
                 if active { resizeHandle }
             }
-            .overlay(alignment: .top) {
-                if active { contextBar.offset(y: -54) }
+            .overlay(alignment: barAbove ? .top : .bottom) {
+                if active { contextBar.offset(x: barShift(for: width), y: barAbove ? -54 : 54) }
             }
-            .contentShape(Rectangle())
-            .onTapGesture { onSelect() }
             .offset(x: object.x * zoom, y: object.y * zoom)
+    }
+
+    /// Keeps the controls on the page when a box sits near the left or right edge.
+    private func barShift(for width: CGFloat) -> CGFloat {
+        let barHalf: CGFloat = 140
+        let pageWidth = PageMetrics.size.width * zoom
+        let center = object.x * zoom + width / 2
+        if center < barHalf { return barHalf - center }
+        if center > pageWidth - barHalf { return (pageWidth - barHalf) - center }
+        return 0
     }
 
     // MARK: Content
@@ -213,9 +236,8 @@ private struct ObjectBox: View {
             .fill(Color.accentColor)
             .frame(width: 22, height: 22)
             .overlay(Circle().stroke(Color.white, lineWidth: 2))
-            .padding(10)                    // a bigger area to grab
+            .padding(8)                     // a bigger area to grab
             .contentShape(Circle())
-            .offset(x: 21, y: 21)
             .gesture(
                 DragGesture(minimumDistance: 1, coordinateSpace: .named("objectsSpace"))
                     .onChanged { value in

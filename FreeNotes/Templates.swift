@@ -1,5 +1,7 @@
 import SwiftUI
 import UIKit
+import PhotosUI
+import UniformTypeIdentifiers
 
 // MARK: - Catalogue
 
@@ -496,20 +498,42 @@ enum TemplateRenderer {
 
 // MARK: - Template picker
 
+/// What the picker hands back: one of the built-in papers, or one you made.
+enum TemplateChoice {
+    case builtin(PageTemplate)
+    case custom(CustomTemplate)
+}
+
+private enum TemplateSelection: Hashable {
+    case builtin(PageTemplate)
+    case custom(UUID)
+}
+
 struct TemplatePickerSheet: View {
     @Environment(\.dismiss) private var dismiss
     @AppStorage("favouriteTemplates") private var favouritesRaw = ""
-    @State private var selected: PageTemplate = .blank
+    @ObservedObject private var custom = CustomTemplateStore.shared
+
+    @State private var selection: TemplateSelection = .builtin(.blank)
     @State private var showingMine = false
 
-    let onPick: (PageTemplate) -> Void
+    @State private var showPDFPicker = false
+    @State private var showPhotoPicker = false
+    @State private var photoItem: PhotosPickerItem?
+    @State private var renaming: CustomTemplate?
+    @State private var renameText = ""
+    @State private var showRename = false
+    @State private var deleting: CustomTemplate?
+    @State private var errorText: String?
+
+    let onPick: (TemplateChoice) -> Void
 
     private var favourites: Set<String> {
         Set(favouritesRaw.split(separator: ",").map(String.init))
     }
 
     var body: some View {
-        VStack(spacing: 0) {
+        let content = VStack(spacing: 0) {
             topBar
             Divider()
             ZStack(alignment: .bottom) {
@@ -519,6 +543,79 @@ struct TemplatePickerSheet: View {
         }
         .background(Color(.systemBackground))
         .presentationDetents([.large])
+        return addCreators(to: content)
+    }
+
+    // MARK: Making templates
+
+    private func addCreators<V: View>(to content: V) -> some View {
+        content
+            .documentPicker(isPresented: $showPDFPicker, types: [.pdf]) { url in createFromPDF(url) }
+            .photosPicker(isPresented: $showPhotoPicker, selection: $photoItem, matching: .images)
+            .onChange(of: photoItem) { _, item in
+                if let item { Task { await createFromPhoto(item) } }
+            }
+            .alert("Rename Template", isPresented: $showRename) {
+                TextField("Name", text: $renameText)
+                Button("Cancel", role: .cancel) {}
+                Button("Save") {
+                    let name = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if let renaming, !name.isEmpty { custom.rename(renaming.id, to: name) }
+                }
+            }
+            .confirmationDialog("Delete this template?", isPresented: deleteShown,
+                                titleVisibility: .visible, presenting: deleting) { template in
+                Button("Delete Template", role: .destructive) {
+                    custom.delete(template.id)
+                    if selection == .custom(template.id) { selection = .builtin(.blank) }
+                }
+            } message: { _ in
+                Text("Notes you already made from it are not affected.")
+            }
+            .alert("Couldn't make the template", isPresented: errorShown) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(errorText ?? "")
+            }
+    }
+
+    private var deleteShown: Binding<Bool> {
+        Binding<Bool>(get: { deleting != nil },
+                      set: { newValue in if !newValue { deleting = nil } })
+    }
+
+    private var errorShown: Binding<Bool> {
+        Binding<Bool>(get: { errorText != nil },
+                      set: { newValue in if !newValue { errorText = nil } })
+    }
+
+    private func createFromPDF(_ url: URL) {
+        do {
+            let template = try CustomTemplate.fromPDF(url)
+            finishCreating(template)
+        } catch {
+            errorText = error.localizedDescription
+        }
+    }
+
+    private func createFromPhoto(_ item: PhotosPickerItem) async {
+        defer { photoItem = nil }
+        guard let data = try? await item.loadTransferable(type: Data.self) else {
+            errorText = "That picture couldn't be opened."
+            return
+        }
+        do {
+            finishCreating(try CustomTemplate.fromPhoto(data))
+        } catch {
+            errorText = error.localizedDescription
+        }
+    }
+
+    private func finishCreating(_ template: CustomTemplate) {
+        custom.add(template)
+        selection = .custom(template.id)
+        showingMine = true
+        Haptics.success()
     }
 
     // MARK: Pieces
@@ -536,8 +633,7 @@ struct TemplatePickerSheet: View {
                 .accessibilityLabel("Close")
                 Spacer()
                 Button {
-                    onPick(selected)
-                    dismiss()
+                    createSelected()
                 } label: {
                     Text("Create")
                         .font(.headline)
@@ -550,6 +646,17 @@ struct TemplatePickerSheet: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
+    }
+
+    private func createSelected() {
+        switch selection {
+        case .builtin(let template):
+            onPick(.builtin(template))
+        case .custom(let id):
+            guard let template = custom.templates.first(where: { $0.id == id }) else { return }
+            onPick(.custom(template))
+        }
+        dismiss()
     }
 
     private var allTemplates: some View {
@@ -590,14 +697,48 @@ struct TemplatePickerSheet: View {
 
     private var myTemplates: some View {
         ScrollView {
-            let mine = PageTemplate.allCases.filter { favourites.contains($0.rawValue) }
-            if mine.isEmpty {
-                ContentUnavailableView("No Saved Templates", systemImage: "heart",
-                                       description: Text("Select a template and tap its star to keep it here."))
-                    .padding(.top, 80)
-            } else {
-                templateGrid(mine).padding(20).padding(.bottom, 90)
+            VStack(alignment: .leading, spacing: 30) {
+                VStack(alignment: .leading, spacing: 16) {
+                    HStack {
+                        Text("Made by you").font(.title3.weight(.bold))
+                        Spacer()
+                        newTemplateMenu
+                    }
+                    if custom.templates.isEmpty {
+                        Text("Make your own. Save a page from any note as a template, or start from a PDF or a photo.")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 150, maximum: 230), spacing: 22)],
+                                  alignment: .leading, spacing: 26) {
+                            ForEach(custom.templates) { customCard($0) }
+                        }
+                    }
+                }
+
+                let starred = PageTemplate.allCases.filter { favourites.contains($0.rawValue) }
+                if !starred.isEmpty {
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text("Starred").font(.title3.weight(.bold))
+                        templateGrid(starred)
+                    }
+                }
             }
+            .padding(20)
+            .padding(.bottom, 90)
+        }
+    }
+
+    private var newTemplateMenu: some View {
+        Menu {
+            Button { showPDFPicker = true } label: { Label("From a PDF…", systemImage: "doc.richtext") }
+            Button { showPhotoPicker = true } label: { Label("From a Photo…", systemImage: "photo") }
+            Text("Inside a note, use ••• › Save Page as Template.")
+        } label: {
+            Label("New Template", systemImage: "plus")
+                .font(.subheadline.weight(.semibold))
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(Color.accentColor.opacity(0.15), in: Capsule())
         }
     }
 
@@ -609,7 +750,7 @@ struct TemplatePickerSheet: View {
     }
 
     private func card(_ template: PageTemplate) -> some View {
-        let isSelected = selected == template
+        let isSelected = selection == .builtin(template)
         let isFavourite = favourites.contains(template.rawValue)
 
         return VStack(alignment: .leading, spacing: 6) {
@@ -627,7 +768,7 @@ struct TemplatePickerSheet: View {
                             .padding(10)
                             .contentShape(Rectangle())
                             .onTapGesture { toggleFavourite(template) }
-                            .accessibilityLabel(isFavourite ? "Remove from My Templates" : "Save to My Templates")
+                            .accessibilityLabel(isFavourite ? "Remove from starred" : "Star this template")
                     }
                 }
             Text(template.rawValue)
@@ -640,8 +781,43 @@ struct TemplatePickerSheet: View {
         }
         .contentShape(Rectangle())
         .onTapGesture {
-            selected = template
+            selection = .builtin(template)
             Haptics.tap()
+        }
+    }
+
+    private func customCard(_ template: CustomTemplate) -> some View {
+        let isSelected = selection == .custom(template.id)
+
+        return VStack(alignment: .leading, spacing: 6) {
+            Image(uiImage: template.preview())
+                .resizable()
+                .aspectRatio(PageMetrics.size.width / PageMetrics.size.height, contentMode: .fit)
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color(.separator)))
+                .overlay(RoundedRectangle(cornerRadius: 4)
+                    .stroke(Color.accentColor, lineWidth: isSelected ? 4 : 0))
+            Text(template.name)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
+            Text("Made by you")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            selection = .custom(template.id)
+            Haptics.tap()
+        }
+        .contextMenu {
+            Button {
+                renaming = template
+                renameText = template.name
+                showRename = true
+            } label: { Label("Rename", systemImage: "pencil") }
+            Button(role: .destructive) { deleting = template } label: {
+                Label("Delete", systemImage: "trash")
+            }
         }
     }
 

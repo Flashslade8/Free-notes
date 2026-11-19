@@ -27,7 +27,7 @@ struct NoteEditorView: View {
     let noteID: UUID
 
     @StateObject private var tools = ToolState()
-    @State private var pencilOnly = false
+    @AppStorage("pencilOnly") private var pencilOnly = false     // stays on until you switch it off
     @State private var shareItem: ShareItem?
     @State private var revisions: [UUID: Int] = [:]
 
@@ -67,6 +67,9 @@ struct NoteEditorView: View {
 
     // Pages and find
     @State private var showPages = false
+    @State private var showSaveTemplate = false
+    @State private var templateName = ""
+    @State private var templateSaved = false
     @State private var findActive = false
     @State private var findQuery = ""
     @State private var findMatches: [FindMatch] = []
@@ -98,7 +101,8 @@ struct NoteEditorView: View {
         let withChrome = addChrome(to: content, idx: idx)
         let withSheets = addSheets(to: withChrome)
         let withAlerts = addAlerts(to: withSheets)
-        let withObservers = addObservers(to: withAlerts)
+        let withTemplateAlerts = addTemplateAlerts(to: withAlerts)
+        let withObservers = addObservers(to: withTemplateAlerts)
         return addUndoObservers(to: withObservers)
     }
 
@@ -151,11 +155,10 @@ struct NoteEditorView: View {
                 TranscriptSheet(player: player, noteID: noteID, recordingID: recording.id)
             }
             .sheet(isPresented: $showPageTemplates) {
-                TemplatePickerSheet { template in addPage(template) }
+                TemplatePickerSheet { choice in addPage(choice) }
             }
             .photosPicker(isPresented: $showPhotoPicker, selection: $photoItem, matching: .images)
-            .fileImporter(isPresented: $showImporter, allowedContentTypes: [.pdf],
-                          onCompletion: handleImportResult)
+            .documentPicker(isPresented: $showImporter, types: [.pdf], onPick: handleImportedPDF)
     }
 
     private func addAlerts<V: View>(to content: V) -> some View {
@@ -181,6 +184,34 @@ struct NoteEditorView: View {
             } message: {
                 Text("This can't be undone.")
             }
+    }
+
+    private func addTemplateAlerts<V: View>(to content: V) -> some View {
+        content
+            .alert("Save Page as Template", isPresented: $showSaveTemplate) {
+                TextField("Template name", text: $templateName)
+                Button("Cancel", role: .cancel) {}
+                Button("Save") { saveCurrentPageAsTemplate() }
+            } message: {
+                Text("The paper, text boxes, pictures and writing on this page are kept, so you can start new notes from it.")
+            }
+            .alert("Template saved", isPresented: $templateSaved) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("Find it under Templates › My Templates.")
+            }
+    }
+
+    private func saveCurrentPageAsTemplate() {
+        let name = templateName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty,
+              let note = store.note(noteID),
+              let pageID = activePageID(),
+              let page = note.pages.first(where: { $0.id == pageID }) else { return }
+        CustomTemplateStore.shared.add(CustomTemplate.make(name: name, from: page, in: note))
+        Haptics.success()
+        // Wait for the first alert to close before showing the next one.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { templateSaved = true }
     }
 
     private func addObservers<V: View>(to content: V) -> some View {
@@ -239,16 +270,11 @@ struct NoteEditorView: View {
                       set: { newValue in if !newValue { pageToDelete = nil } })
     }
 
-    private func handleImportResult(_ result: Result<URL, Error>) {
-        switch result {
-        case .success(let url):
-            do {
-                try store.insertPDF(from: url, into: noteID)
-                Haptics.success()
-            } catch {
-                importError = error.localizedDescription
-            }
-        case .failure(let error):
+    private func handleImportedPDF(_ url: URL) {
+        do {
+            try store.insertPDF(from: url, into: noteID)
+            Haptics.success()
+        } catch {
             importError = error.localizedDescription
         }
     }
@@ -328,6 +354,17 @@ struct NoteEditorView: View {
         // Let the new direction apply first, then turn the page.
         DispatchQueue.main.async {
             withAnimation(.easeInOut(duration: 0.55)) { pageIndex = target }
+        }
+    }
+
+    private func addPage(_ choice: TemplateChoice) {
+        switch choice {
+        case .builtin(let template):
+            addPage(template)
+        case .custom(let template):
+            store.addPage(from: template, to: noteID)
+            Haptics.success()
+            if pageMode, let count = store.note(noteID)?.pages.count { goToPage(count - 1) }
         }
     }
 
@@ -579,6 +616,13 @@ struct NoteEditorView: View {
             Button { undoManager?.redo() } label: { Image(systemName: "arrow.uturn.forward") }
                 .disabled(!canRedo)
 
+            Toggle(isOn: $pencilOnly) {
+                Image(systemName: "applepencil")
+                    .symbolVariant(pencilOnly ? .fill : .none)
+            }
+            .toggleStyle(.button)
+            .accessibilityLabel("Apple Pencil only")
+
             Button { Task { await micTapped() } } label: {
                 Image(systemName: micSymbol)
                     .foregroundStyle(micColor)
@@ -627,6 +671,12 @@ struct NoteEditorView: View {
                 Button { showPageTemplates = true } label: {
                     Label("Page from Template…", systemImage: "doc.text.image")
                 }
+                Button {
+                    templateName = store.note(noteID)?.title ?? ""
+                    showSaveTemplate = true
+                } label: {
+                    Label("Save Page as Template…", systemImage: "square.and.arrow.down.on.square")
+                }
                 Button { showImporter = true } label: {
                     Label("Insert PDF…", systemImage: "doc.richtext")
                 }
@@ -649,7 +699,6 @@ struct NoteEditorView: View {
             }
 
             Section {
-                Toggle(isOn: $pencilOnly) { Label("Apple Pencil Only", systemImage: "applepencil") }
                 Button {
                     if let url = PDFExporter.export(store.notes[idx]) { shareItem = ShareItem(url: url) }
                 } label: { Label("Export as PDF…", systemImage: "square.and.arrow.up") }

@@ -34,12 +34,15 @@ struct HomeView: View {
                     }
             }
         }
+        .navigationSplitViewStyle(.balanced)        // the page slides over with the sidebar
         .environment(\.noteNamespace, noteNamespace)
         .animation(.smooth(duration: 0.25), value: selection)           // screens cross-fade
         .onChange(of: selection) { _, _ in path = NavigationPath() }   // leave an open note
         .onChange(of: path.count) { _, count in
             // An open note takes the whole screen; the sidebar comes back when you leave it.
-            withAnimation { columnVisibility = count > 0 ? .detailOnly : .automatic }
+            withAnimation(.smooth(duration: 0.45)) {
+                columnVisibility = count > 0 ? .detailOnly : .automatic
+            }
         }
         .sheet(isPresented: $showSettings) { SettingsView() }
         .alert("New Folder", isPresented: $showNewFolder) {
